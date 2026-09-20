@@ -1,0 +1,176 @@
+from __future__ import annotations
+
+import hashlib
+import itertools
+import json
+import math
+from dataclasses import asdict, dataclass
+from typing import Any
+
+from .technical_analysis import indicator
+
+
+@dataclass(frozen=True)
+class Rule:
+    kind: str
+    fast: int
+    slow: int
+    hold: int
+    side: str = "both"
+
+
+def _signal(closes: list[float], rule: Rule) -> list[int]:
+    fast = indicator(closes, "ema" if rule.kind == "ema_cross" else "sma", rule.fast)
+    slow = indicator(closes, "sma", rule.slow)
+    output = [0] * len(closes)
+    if rule.kind in {"sma_cross", "ema_cross"}:
+        for index in range(1, len(closes)):
+            if None in (fast[index - 1], slow[index - 1], fast[index], slow[index]):
+                continue
+            if fast[index - 1] <= slow[index - 1] and fast[index] > slow[index]:
+                output[index] = 1
+            elif fast[index - 1] >= slow[index - 1] and fast[index] < slow[index]:
+                output[index] = -1
+    elif rule.kind == "breakout":
+        for index in range(rule.slow, len(closes)):
+            previous = closes[index - rule.slow : index]
+            output[index] = (
+                1 if closes[index] > max(previous) else (-1 if closes[index] < min(previous) else 0)
+            )
+    elif rule.kind == "rsi_reversion":
+        rsi = indicator(closes, "rsi", rule.slow)
+        for index, value in enumerate(rsi):
+            if value is not None:
+                output[index] = 1 if value < rule.fast else (-1 if value > 100 - rule.fast else 0)
+    if rule.side == "long":
+        return [max(value, 0) for value in output]
+    if rule.side == "short":
+        return [min(value, 0) for value in output]
+    return output
+
+
+def backtest(candles: list[dict[str, Any]], rule: Rule, cost_bps: float = 13) -> dict[str, Any]:
+    """Signals use bar close; fills use the next bar open; positions never overlap."""
+    closes = [float(row["close"]) for row in candles]
+    signals = _signal(closes, rule)
+    trades = []
+    index = 0
+    while index + rule.hold + 1 < len(candles):
+        side = signals[index]
+        if side == 0:
+            index += 1
+            continue
+        entry_index, exit_index = index + 1, index + 1 + rule.hold
+        entry, exit_price = float(candles[entry_index]["open"]), float(candles[exit_index]["open"])
+        gross = side * (exit_price / entry - 1)
+        trades.append(
+            {
+                "signalTime": candles[index]["closeTime"],
+                "entryTime": candles[entry_index]["time"],
+                "exitTime": candles[exit_index]["time"],
+                "side": side,
+                "grossReturn": gross,
+                "netReturn": gross - cost_bps / 10_000,
+            }
+        )
+        index = exit_index
+    returns = [row["netReturn"] for row in trades]
+    curve = peak = drawdown = 0.0
+    for value in returns:
+        curve += value
+        peak = max(peak, curve)
+        drawdown = max(drawdown, peak - curve)
+    return {
+        "rule": asdict(rule),
+        "trades": len(trades),
+        "totalReturn": sum(returns),
+        "meanReturn": sum(returns) / len(returns) if returns else None,
+        "winRate": sum(value > 0 for value in returns) / len(returns) if returns else None,
+        "maxDrawdown": drawdown,
+    }
+
+
+def rules(max_rules: int = 500) -> list[Rule]:
+    family = []
+    for kind in ("sma_cross", "ema_cross"):
+        for fast, slow, hold, side in itertools.product(
+            (3, 5, 8, 13), (21, 34, 55, 89), (4, 8, 16, 32), ("long", "short", "both")
+        ):
+            if fast < slow:
+                family.append(Rule(kind, fast, slow, hold, side))
+    for threshold, period, hold, side in itertools.product(
+        (20, 25, 30, 35), (7, 14, 21), (4, 8, 16), ("long", "short", "both")
+    ):
+        family.append(Rule("rsi_reversion", threshold, period, hold, side))
+    for window, hold, side in itertools.product(
+        (12, 24, 48, 96), (4, 8, 16, 32), ("long", "short", "both")
+    ):
+        family.append(Rule("breakout", 2, window, hold, side))
+    return family[:max_rules]
+
+
+def walk_forward(
+    bundle: dict[str, Any],
+    cost_bps: float = 13,
+    max_rules: int = 500,
+    min_confirmation_trades: int = 10,
+) -> dict[str, Any]:
+    all_rules = rules(max_rules)
+    folds = []
+    selected = []
+    for symbol, candles in bundle["series"].items():
+        if len(candles) < 300:
+            continue
+        first, second = math.floor(len(candles) * 0.6), math.floor(len(candles) * 0.8)
+        development, validation, confirmation = (
+            candles[:first],
+            candles[first:second],
+            candles[second:],
+        )
+        ranked = sorted(
+            (backtest(development, rule, cost_bps) for rule in all_rules),
+            key=lambda row: (row["trades"] >= 10, row["meanReturn"] or -99),
+            reverse=True,
+        )
+        finalists = ranked[:5]
+        checked = []
+        for row in finalists:
+            rule = Rule(**row["rule"])
+            valid = backtest(validation, rule, cost_bps)
+            checked.append({"development": row, "validation": valid})
+        eligible = [
+            row
+            for row in checked
+            if row["validation"]["trades"] >= 5 and (row["validation"]["meanReturn"] or 0) > 0
+        ]
+        champion = max(eligible, key=lambda row: row["validation"]["meanReturn"], default=None)
+        if champion:
+            rule = Rule(**champion["development"]["rule"])
+            champion["confirmation"] = backtest(confirmation, rule, cost_bps)
+            champion["decision"] = (
+                "forward_candidate"
+                if champion["confirmation"]["trades"] >= min_confirmation_trades
+                and (champion["confirmation"]["meanReturn"] or 0) > 0
+                else "confirmation_failed"
+            )
+            selected.append({"symbol": symbol, **champion})
+        folds.append(
+            {"symbol": symbol, "bars": len(candles), "finalists": checked, "champion": champion}
+        )
+    protocol = {
+        "cost_bps": cost_bps,
+        "max_rules": max_rules,
+        "min_confirmation_trades": min_confirmation_trades,
+        "split": [0.6, 0.2, 0.2],
+        "fill": "next_bar_open",
+        "non_overlapping": True,
+    }
+    return {
+        "protocol": protocol,
+        "protocol_hash": hashlib.sha256(json.dumps(protocol, sort_keys=True).encode()).hexdigest(),
+        "folds": folds,
+        "selected": selected,
+        "conclusion": "forward_candidates"
+        if any(x["decision"] == "forward_candidate" for x in selected)
+        else "no_confirmed_public_candle_edge",
+    }

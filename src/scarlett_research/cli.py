@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import os
 from dataclasses import asdict
 from pathlib import Path
 
+from .backtest import walk_forward
 from .client import ScarlettClient
 from .demo import write_demo
 from .evaluation import Candidate, dataset_summary, metrics_dict, score
+from .market_data import HyperliquidConnector, fetch_bundle
 from .search import run_search
 from .sync import discover, sync
 from .technical_analysis import analyze, resample
@@ -75,6 +78,16 @@ def parser() -> argparse.ArgumentParser:
     ta_p.add_argument("--target-interval", required=True)
     ta_p.add_argument("--indicator", choices=("sma", "ema", "rsi"), required=True)
     ta_p.add_argument("--period", type=int, default=14)
+    candles_p = commands.add_parser("candles-fetch")
+    candles_p.add_argument("--symbol", action="append", required=True)
+    candles_p.add_argument("--interval", default="15m")
+    candles_p.add_argument("--days", type=int, default=52)
+    candles_p.add_argument("--output", type=Path, required=True)
+    backtest_p = commands.add_parser("backtest-loop")
+    backtest_p.add_argument("--candles", type=Path, required=True)
+    backtest_p.add_argument("--output", type=Path, required=True)
+    backtest_p.add_argument("--cost-bps", type=float, default=13)
+    backtest_p.add_argument("--max-rules", type=int, default=500)
     return root
 
 
@@ -92,6 +105,21 @@ def main() -> None:
         )
     elif args.command == "demo":
         result = {"snapshot": str(write_demo(args.output, args.seed))}
+    elif args.command == "candles-fetch":
+        end = dt.datetime.now(dt.UTC)
+        start = end - dt.timedelta(days=args.days)
+        result = fetch_bundle(
+            HyperliquidConnector(),
+            args.symbol,
+            args.interval,
+            int(start.timestamp() * 1000),
+            int(end.timestamp() * 1000),
+            args.output,
+        )
+    elif args.command == "backtest-loop":
+        result = walk_forward(load(args.candles), args.cost_bps, args.max_rules)
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(result, indent=2) + "\n")
     elif args.command == "ta":
         source = load(args.candles)
         candles = source.get("candles", source) if isinstance(source, dict) else source
