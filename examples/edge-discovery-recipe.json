@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "name": "Scarlett edge discovery",
+  "cadence": "daily",
+  "scarlett": {
+    "discoverBeforeSync": true,
+    "resources": [
+      "markets",
+      "profiles",
+      "strategies",
+      "strategy-primitives",
+      "ta-functions",
+      "setups",
+      "strategy-activity",
+      "forecasts",
+      "candles",
+      "market-context"
+    ],
+    "includeRejectedAndNoTrade": true,
+    "requestBudget": 500,
+    "requireCompleteCoverage": false
+  },
+  "externalCandles": {
+    "provider": "binance_spot_archive",
+    "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "ZECUSDT"],
+    "intervals": ["15m", "1h", "4h"],
+    "start": "2020-01-01",
+    "redistributeRawData": false
+  },
+  "research": {
+    "costBps": [13, 19, 25],
+    "candidateBudget": 500,
+    "developmentFraction": 0.6,
+    "validationFraction": 0.2,
+    "confirmationFraction": 0.2,
+    "minimumConfirmationTrades": 20,
+    "controls": [
+      "cash",
+      "buy_and_hold",
+      "long_only_trend",
+      "short_only_trend",
+      "scarlett_without_jev_when_available"
+    ],
+    "searchFamilies": [
+      "scarlett_strategy_and_direction_filters",
+      "confidence_and_strength_thresholds",
+      "forecast_horizon_agreement",
+      "regime_conditioned_rules",
+      "scarlett_signal_plus_ta_confirmation",
+      "explicit_strategy_blends"
+    ]
+  },
+  "promotion": {
+    "requirePositiveConfirmationAfterAllCosts": true,
+    "requirePositiveHigherCostSensitivity": true,
+    "requireMultipleTimeBlocks": true,
+    "requireConcentrationReview": true,
+    "stateBeforeForwardTest": "exploratory_candidate",
+    "neverLaunchLiveTrading": true
+  },
+  "reporting": {
+    "stayQuietWhenUnchanged": true,
+    "notifyOn": [
+      "new_candidate",
+      "candidate_failed",
+      "material_evidence_change",
+      "coverage_failure",
+      "user_action_required"
+    ]
+  }
+}

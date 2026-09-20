@@ -52,6 +52,8 @@ confirmation window or launches a live strategy.
 
 See [methodology](docs/methodology.md) for evidence limits and
 [agent workflow](docs/agent-workflow.md) for using the included skill.
+The reusable [edge-discovery recipe](examples/edge-discovery-recipe.json) and
+[daily loop](docs/edge-discovery-loop.md) define the recurring API-driven workflow.
 
 ## Snapshot format
 

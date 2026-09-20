@@ -17,9 +17,13 @@ promotion gates during a search run.
 7. Call a winner only an exploratory candidate
 8. Freeze its exact definition before collecting new forward paper observations
 
+For recurring work, load `examples/edge-discovery-recipe.json` and follow
+`docs/edge-discovery-loop.md`. Reuse immutable cached resources, refresh mutable outcomes,
+and treat each inspected confirmation window as consumed. Stay quiet when new data does not
+materially change the result.
+
 Never place live trades, expose a token, treat paper results as exchange fills, use outcome
 labels as decision-time features, or keep tuning after seeing validation results. A
 `no_supported_edge` result is successful execution of the protocol.
 
 Read `references/research-protocol.md` before interpreting a run.
-
