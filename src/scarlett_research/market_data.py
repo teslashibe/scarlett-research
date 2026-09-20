@@ -385,12 +385,17 @@ def fetch_bundle(
 ) -> dict[str, Any]:
     output.parent.mkdir(parents=True, exist_ok=True)
     workers = 4 if connector.name.startswith("binance_") else 8
+
+    def fetch(symbol: str) -> tuple[str, list[dict[str, Any]], dict[str, str] | None]:
+        try:
+            return symbol, connector.candles(symbol, interval, start_ms, end_ms), None
+        except Exception as exc:  # preserve the rest of a broad-universe batch
+            return symbol, [], {"type": type(exc).__name__, "message": str(exc)}
+
     with ThreadPoolExecutor(max_workers=min(workers, len(symbols))) as pool:
-        fetched = pool.map(
-            lambda symbol: (symbol, connector.candles(symbol, interval, start_ms, end_ms)),
-            symbols,
-        )
-        series = dict(fetched)
+        fetched = list(pool.map(fetch, symbols))
+    series = {symbol: rows for symbol, rows, _ in fetched}
+    failures = {symbol: error for symbol, _, error in fetched if error is not None}
     bundle = {
         "metadata": {
             "source": connector.name,
@@ -405,9 +410,14 @@ def fetch_bundle(
             ),
         },
         "series": series,
+        "failures": failures,
     }
     output.write_text(json.dumps(bundle, indent=2) + "\n")
-    return {"output": str(output), "symbols": {key: len(value) for key, value in series.items()}}
+    return {
+        "output": str(output),
+        "symbols": {key: len(value) for key, value in series.items()},
+        "failures": failures,
+    }
 
 
 def fetch_metrics_bundle(

@@ -5,6 +5,7 @@ from scarlett_research.market_data import (
     BinanceArchiveConnector,
     _is_archive_data_row,
     _next_month,
+    fetch_bundle,
     normalize_market_symbol,
 )
 
@@ -83,3 +84,18 @@ def test_futures_archive_header_is_not_a_timestamp():
 def test_binance_instrument_is_mapped_to_forecast_market():
     assert normalize_market_symbol("BTCUSDT", "binance_spot_archive") == "BTC"
     assert normalize_market_symbol("BTC", "hyperliquid") == "BTC"
+
+
+def test_broad_fetch_preserves_successes_and_records_symbol_failures(tmp_path):
+    class Connector:
+        name = "test"
+
+        def candles(self, symbol, interval, start_ms, end_ms):
+            if symbol == "BADUSDT":
+                raise TimeoutError("unavailable")
+            return [{"symbol": symbol}]
+
+    output = tmp_path / "bundle.json"
+    result = fetch_bundle(Connector(), ["BTCUSDT", "BADUSDT"], "4h", 0, 1, output)
+    assert result["symbols"] == {"BTCUSDT": 1, "BADUSDT": 0}
+    assert result["failures"]["BADUSDT"]["type"] == "TimeoutError"
