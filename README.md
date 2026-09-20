@@ -19,6 +19,10 @@ scarlett-research demo --output runs/demo
 scarlett-research loop --snapshot runs/demo/snapshot.json --output runs/search
 scarlett-research candles-fetch --symbol BTC --symbol ETH --interval 15m --days 52 --output data/hyperliquid.json
 scarlett-research backtest-loop --candles data/hyperliquid.json --output runs/public-candles.json
+
+# Deeper spot history from Binance's public monthly archive
+scarlett-research candles-archive --symbol BTCUSDT --symbol ETHUSDT --interval 1h \
+  --start 2020-01-01 --output data/binance-1h.json
 ```
 
 For live public and account-scoped data:
@@ -43,6 +47,7 @@ confirmation window or launches a live strategy.
 - `loop` runs a bounded, reproducible candidate-search loop
 - `ta` runs local closed-bar SMA, EMA, or RSI analysis with supported resampling
 - `candles-fetch` downloads keyless public Hyperliquid candles into a provenance bundle
+- `candles-archive` downloads multi-year monthly Binance spot archives without an API key
 - `backtest-loop` searches bounded indicator rules using next-bar fills and a 60/20/20 walk-forward protocol
 
 See [methodology](docs/methodology.md) for evidence limits and

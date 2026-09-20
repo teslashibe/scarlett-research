@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import csv
 import datetime as dt
+import io
 import json
+import urllib.error
 import urllib.request
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -67,6 +71,69 @@ class HyperliquidConnector:
                 }
             )
         return output
+
+
+@dataclass
+class BinanceArchiveConnector:
+    """Public Binance Vision monthly spot-kline archive connector."""
+
+    base_url: str = "https://data.binance.vision/data/spot/monthly/klines"
+    name: str = "binance_spot_archive"
+
+    def candles(
+        self, symbol: str, interval: str, start_ms: int, end_ms: int
+    ) -> list[dict[str, Any]]:
+        start = dt.datetime.fromtimestamp(start_ms / 1000, dt.UTC)
+        end = dt.datetime.fromtimestamp(end_ms / 1000, dt.UTC)
+        month = dt.datetime(start.year, start.month, 1, tzinfo=dt.UTC)
+        output = []
+        while month <= end:
+            label = f"{month.year:04d}-{month.month:02d}"
+            filename = f"{symbol}-{interval}-{label}.zip"
+            url = f"{self.base_url}/{symbol}/{interval}/{filename}"
+            try:
+                with urllib.request.urlopen(url, timeout=60) as response:
+                    archive = zipfile.ZipFile(io.BytesIO(response.read()))
+            except urllib.error.HTTPError as exc:
+                if exc.code == 404:
+                    month = _next_month(month)
+                    continue
+                raise
+            with archive.open(archive.namelist()[0]) as source:
+                reader = csv.reader(io.TextIOWrapper(source))
+                for row in reader:
+                    raw_open = int(row[0])
+                    raw_close = int(row[6])
+                    divisor = 1_000_000 if raw_open > 10**14 else 1_000
+                    opened = raw_open / divisor
+                    closed = raw_close / divisor
+                    if opened * 1000 < start_ms or opened * 1000 > end_ms:
+                        continue
+                    output.append(
+                        {
+                            "time": dt.datetime.fromtimestamp(opened, dt.UTC)
+                            .isoformat()
+                            .replace("+00:00", "Z"),
+                            "closeTime": dt.datetime.fromtimestamp(closed, dt.UTC)
+                            .isoformat()
+                            .replace("+00:00", "Z"),
+                            "open": float(row[1]),
+                            "high": float(row[2]),
+                            "low": float(row[3]),
+                            "close": float(row[4]),
+                            "volume": float(row[5]),
+                            "trades": int(row[8]),
+                            "symbol": symbol,
+                            "interval": interval,
+                            "source": self.name,
+                        }
+                    )
+            month = _next_month(month)
+        return sorted(output, key=lambda row: row["time"])
+
+
+def _next_month(value: dt.datetime) -> dt.datetime:
+    return dt.datetime(value.year + (value.month == 12), value.month % 12 + 1, 1, tzinfo=dt.UTC)
 
 
 def fetch_bundle(

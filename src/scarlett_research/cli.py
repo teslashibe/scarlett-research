@@ -11,7 +11,7 @@ from .backtest import walk_forward
 from .client import ScarlettClient
 from .demo import write_demo
 from .evaluation import Candidate, dataset_summary, metrics_dict, score
-from .market_data import HyperliquidConnector, fetch_bundle
+from .market_data import BinanceArchiveConnector, HyperliquidConnector, fetch_bundle
 from .search import run_search
 from .sync import discover, sync
 from .technical_analysis import analyze, resample
@@ -83,6 +83,12 @@ def parser() -> argparse.ArgumentParser:
     candles_p.add_argument("--interval", default="15m")
     candles_p.add_argument("--days", type=int, default=52)
     candles_p.add_argument("--output", type=Path, required=True)
+    archive_p = commands.add_parser("candles-archive")
+    archive_p.add_argument("--symbol", action="append", required=True)
+    archive_p.add_argument("--interval", default="1h")
+    archive_p.add_argument("--start", required=True, help="UTC date, for example 2020-01-01")
+    archive_p.add_argument("--end", help="UTC date, defaults to now")
+    archive_p.add_argument("--output", type=Path, required=True)
     backtest_p = commands.add_parser("backtest-loop")
     backtest_p.add_argument("--candles", type=Path, required=True)
     backtest_p.add_argument("--output", type=Path, required=True)
@@ -110,6 +116,21 @@ def main() -> None:
         start = end - dt.timedelta(days=args.days)
         result = fetch_bundle(
             HyperliquidConnector(),
+            args.symbol,
+            args.interval,
+            int(start.timestamp() * 1000),
+            int(end.timestamp() * 1000),
+            args.output,
+        )
+    elif args.command == "candles-archive":
+        start = dt.datetime.fromisoformat(args.start).replace(tzinfo=dt.UTC)
+        end = (
+            dt.datetime.fromisoformat(args.end).replace(tzinfo=dt.UTC)
+            if args.end
+            else dt.datetime.now(dt.UTC)
+        )
+        result = fetch_bundle(
+            BinanceArchiveConnector(),
             args.symbol,
             args.interval,
             int(start.timestamp() * 1000),

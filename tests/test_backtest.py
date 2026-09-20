@@ -1,6 +1,7 @@
 import datetime as dt
 
 from scarlett_research.backtest import Rule, backtest, walk_forward
+from scarlett_research.market_data import _next_month
 
 
 def candles(count: int, drift: float = 0.001):
@@ -37,3 +38,9 @@ def test_walk_forward_is_bounded():
     result = walk_forward({"series": {"BTC": candles(600)}}, max_rules=20)
     assert result["protocol"]["max_rules"] == 20
     assert len(result["folds"][0]["finalists"]) == 5
+
+
+def test_archive_month_rollover():
+    assert _next_month(dt.datetime(2025, 12, 1, tzinfo=dt.UTC)) == dt.datetime(
+        2026, 1, 1, tzinfo=dt.UTC
+    )
