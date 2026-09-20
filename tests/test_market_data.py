@@ -1,4 +1,13 @@
-from scarlett_research.market_data import _metrics_record
+from scarlett_research.market_data import _archive_prefixes, _metrics_record
+
+
+def test_archive_prefix_listing_extracts_symbols_and_continuation_token():
+    payload = b"""<?xml version="1.0" encoding="UTF-8"?>
+    <ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+      <NextContinuationToken>next/page</NextContinuationToken>
+      <CommonPrefixes><Prefix>data/futures/um/monthly/klines/BTCUSDT/</Prefix></CommonPrefixes>
+    </ListBucketResult>"""
+    assert _archive_prefixes(payload) == (["data/futures/um/monthly/klines/BTCUSDT/"], "next/page")
 
 
 def test_metrics_record_normalizes_public_archive_fields():

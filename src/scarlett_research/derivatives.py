@@ -4,6 +4,7 @@ import hashlib
 import itertools
 import json
 import math
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,29 @@ def _rolling_mean(values: list[float | None], window: int) -> list[float | None]
     return output
 
 
+def _rolling_std(values: list[float | None], window: int) -> list[float | None]:
+    """Population rolling standard deviation using only values known at each bar."""
+    output: list[float | None] = [None] * len(values)
+    total = 0.0
+    total_squared = 0.0
+    count = 0
+    for index, value in enumerate(values):
+        if value is not None:
+            total += value
+            total_squared += value * value
+            count += 1
+        if index >= window:
+            expired = values[index - window]
+            if expired is not None:
+                total -= expired
+                total_squared -= expired * expired
+                count -= 1
+        if index + 1 >= window and count == window:
+            variance = max(0.0, total_squared / window - (total / window) ** 2)
+            output[index] = math.sqrt(variance)
+    return output
+
+
 def feature_series(
     candles: list[dict[str, Any]],
     metrics: list[dict[str, Any]],
@@ -57,10 +81,27 @@ def feature_series(
         name: [by_time.get(candle["time"], {}).get(field) for candle in candles]
         for name, field in fields.items()
     }
+    closes = [float(candle["close"]) for candle in candles]
+    volumes = [float(candle["volume"]) for candle in candles]
+    trades = [float(candle["trades"]) for candle in candles]
+    bar_returns = _change(closes, 1)
     features: dict[str, list[float | None]] = {
         "oi_change_1h": _change(raw["open_interest"], 12),
         "oi_change_4h": _change(raw["open_interest"], 48),
         "oi_change_24h": _change(raw["open_interest"], 288),
+        "price_return_1h": _change(closes, 12),
+        "price_return_4h": _change(closes, 48),
+        "price_return_24h": _change(closes, 288),
+        "realized_volatility_1h": _rolling_std(bar_returns, 12),
+        "realized_volatility_4h": _rolling_std(bar_returns, 48),
+        "bar_range": [
+            (float(candle["high"]) - float(candle["low"])) / float(candle["open"])
+            if float(candle["open"]) != 0
+            else None
+            for candle in candles
+        ],
+        "volume_change_1h": _change(volumes, 12),
+        "trade_count_change_1h": _change(trades, 12),
     }
     for name in ("top_account_ratio", "top_position_ratio", "global_ratio", "taker_ratio"):
         features[name] = raw[name]
@@ -113,11 +154,55 @@ def _mask(values: list[float | None], operator: str, threshold: float) -> int:
     mask = 0
     for index, value in enumerate(values):
         if value is not None and (
-            (operator == "gt" and value > threshold)
-            or (operator == "lt" and value < threshold)
+            (operator == "gt" and value > threshold) or (operator == "lt" and value < threshold)
         ):
             mask |= 1 << index
     return mask
+
+
+def _indices(values: list[float | None], operator: str, threshold: float) -> list[int]:
+    return [
+        index
+        for index, value in enumerate(values)
+        if value is not None
+        and ((operator == "gt" and value > threshold) or (operator == "lt" and value < threshold))
+    ]
+
+
+def _go_metrics(
+    binary: Path,
+    candles: list[dict[str, Any]],
+    recipes: list[tuple[str, tuple[dict, ...]]],
+    source_ids: dict[str, int],
+    source_indices: list[list[int]],
+    start: int,
+    end: int,
+    cost_bps: float,
+) -> list[dict[str, Any]]:
+    payload = {
+        "opens": [float(candle["open"]) for candle in candles],
+        "sources": source_indices,
+        "recipes": [
+            {
+                "family": family,
+                "sources": [source_ids[json.dumps(source, sort_keys=True)] for source in sources],
+                "hold": max(source["hold"] for source in sources),
+                "side": 1 if sources[0]["side"] == "long" else -1,
+            }
+            for family, sources in recipes
+        ],
+        "start": start,
+        "end": end,
+        "costBps": cost_bps,
+        "workers": 0,
+    }
+    completed = subprocess.run(
+        [str(binary)],
+        input=json.dumps(payload, separators=(",", ":")).encode(),
+        capture_output=True,
+        check=True,
+    )
+    return json.loads(completed.stdout)["results"]
 
 
 def _recipes(sources: list[dict]) -> list[tuple[str, tuple[dict, ...]]]:
@@ -155,6 +240,7 @@ def run_derivatives_campaign(
     funding_bundle: dict[str, Any] | None = None,
     cost_bps: float = 25,
     max_recipes: int = 250_000,
+    kernel: Path | None = None,
 ) -> dict[str, Any]:
     prepared = {}
     for symbol, candles in candles_bundle["series"].items():
@@ -164,32 +250,68 @@ def run_derivatives_campaign(
         first = int(len(candles) * 0.6)
         sources = _rule_sources(features, first)
         recipes = _recipes(sources)
-        masks = {
-            json.dumps(source, sort_keys=True): _mask(
-                features[source["feature"]], source["operator"], source["threshold"]
-            )
-            for source in sources
+        masks = (
+            {}
+            if kernel is not None
+            else {
+                json.dumps(source, sort_keys=True): _mask(
+                    features[source["feature"]], source["operator"], source["threshold"]
+                )
+                for source in sources
+            }
+        )
+        source_ids = {
+            json.dumps(source, sort_keys=True): index for index, source in enumerate(sources)
         }
-        prepared[symbol] = (candles, recipes, masks)
+        source_indices = (
+            [
+                _indices(features[source["feature"]], source["operator"], source["threshold"])
+                for source in sources
+            ]
+            if kernel is not None
+            else []
+        )
+        prepared[symbol] = (candles, recipes, masks, source_ids, source_indices)
     budgets = _balanced_budgets(
-        {symbol: len(recipes) for symbol, (_, recipes, _) in prepared.items()}, max_recipes
+        {symbol: len(recipes) for symbol, (_, recipes, _, _, _) in prepared.items()}, max_recipes
     )
     trials, survivors = [], []
     for symbol in sorted(prepared):
-        candles, recipes, masks = prepared[symbol]
+        candles, recipes, masks, source_ids, source_indices = prepared[symbol]
         first, second = int(len(candles) * 0.6), int(len(candles) * 0.8)
-        for family, sources in recipes[: budgets[symbol]]:
+        selected_recipes = recipes[: budgets[symbol]]
+        if kernel is not None:
+            development_rows = _go_metrics(
+                kernel, candles, selected_recipes, source_ids, source_indices, 0, first, cost_bps
+            )
+            validation_rows = _go_metrics(
+                kernel,
+                candles,
+                selected_recipes,
+                source_ids,
+                source_indices,
+                first,
+                second,
+                cost_bps,
+            )
+        else:
+            development_rows = validation_rows = None
+        for recipe_index, (family, sources) in enumerate(selected_recipes):
             hold = max(source["hold"] for source in sources)
             side = 1 if sources[0]["side"] == "long" else -1
-            mask = _combine(
-                family, [masks[json.dumps(source, sort_keys=True)] for source in sources]
-            )
-            development = return_metrics(
-                masked_returns(candles, mask, hold, cost_bps, 0, first, side)
-            )
-            validation = return_metrics(
-                masked_returns(candles, mask, hold, cost_bps, first, second, side)
-            )
+            if kernel is not None:
+                development = development_rows[recipe_index]
+                validation = validation_rows[recipe_index]
+            else:
+                mask = _combine(
+                    family, [masks[json.dumps(source, sort_keys=True)] for source in sources]
+                )
+                development = return_metrics(
+                    masked_returns(candles, mask, hold, cost_bps, 0, first, side)
+                )
+                validation = return_metrics(
+                    masked_returns(candles, mask, hold, cost_bps, first, second, side)
+                )
             passed = bool(
                 development["trades"] >= 30
                 and validation["trades"] >= 15
@@ -219,8 +341,10 @@ def run_derivatives_campaign(
     survivors.sort(key=lambda row: row["selectionScore"], reverse=True)
     selected, assets, structures = [], {}, {}
     for candidate in survivors:
-        structure = candidate["family"] + ":" + "+".join(
-            sorted(source["feature"] for source in candidate["sources"])
+        structure = (
+            candidate["family"]
+            + ":"
+            + "+".join(sorted(source["feature"] for source in candidate["sources"]))
         )
         symbol = candidate["symbol"]
         if assets.get(symbol, 0) >= 4 or structures.get(structure, 0) >= 2:
@@ -243,6 +367,7 @@ def run_derivatives_campaign(
             "allocation": "balanced_water_fill_by_symbol",
             "recipeBudgetBySymbol": budgets,
             "maxRecipes": max_recipes,
+            "engine": "go_batch_v1" if kernel is not None else "python_bitmask_v1",
         },
         "evaluated": len(trials),
         "survivors": len(survivors),
@@ -252,9 +377,7 @@ def run_derivatives_campaign(
     }
 
 
-def merge_derivatives_campaigns(
-    campaigns: list[dict[str, Any]], limit: int = 24
-) -> dict[str, Any]:
+def merge_derivatives_campaigns(campaigns: list[dict[str, Any]], limit: int = 24) -> dict[str, Any]:
     if not campaigns or limit < 1:
         raise ValueError("derivatives campaigns and a positive limit are required")
     candidates = [
@@ -268,8 +391,10 @@ def merge_derivatives_campaigns(
     for candidate in candidates:
         if candidate["recipeId"] in seen:
             continue
-        structure = candidate["family"] + ":" + "+".join(
-            sorted(source["feature"] for source in candidate["sources"])
+        structure = (
+            candidate["family"]
+            + ":"
+            + "+".join(sorted(source["feature"] for source in candidate["sources"]))
         )
         symbol = candidate["symbol"]
         if assets.get(symbol, 0) >= 4 or structures.get(structure, 0) >= 2:
@@ -328,21 +453,24 @@ def confirm_derivatives_selection(
         mask = _combine(candidate["family"], masks)
         start, end = int(len(candles) * 0.8), len(candles)
         side = 1 if candidate["side"] == "long" else -1
-        outcomes = masked_outcomes(
-            candles, mask, candidate["hold"], cost_bps, start, end, side
-        )
+        outcomes = masked_outcomes(candles, mask, candidate["hold"], cost_bps, start, end, side)
         returns = [row["return"] for row in outcomes]
-        stress = masked_returns(
-            candles, mask, candidate["hold"], stress_cost_bps, start, end, side
-        )
-        raw_p = sign_flip_p_value(
-            returns, int(candidate["recipeId"][:16], 16), samples=100_000
-        )
+        stress = masked_returns(candles, mask, candidate["hold"], stress_cost_bps, start, end, side)
+        raw_p = sign_flip_p_value(returns, int(candidate["recipeId"][:16], 16), samples=100_000)
         results.append(
             {
-                **{key: candidate[key] for key in (
-                    "recipeId", "symbol", "marketSymbol", "family", "side", "hold", "sources"
-                )},
+                **{
+                    key: candidate[key]
+                    for key in (
+                        "recipeId",
+                        "symbol",
+                        "marketSymbol",
+                        "family",
+                        "side",
+                        "hold",
+                        "sources",
+                    )
+                },
                 "trades": len(returns),
                 "totalReturn": sum(returns),
                 "meanReturn": sum(returns) / len(returns) if returns else None,

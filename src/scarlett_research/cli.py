@@ -24,9 +24,11 @@ from .market_data import (
     BinanceFundingArchiveConnector,
     BinanceFuturesMetricsConnector,
     HyperliquidConnector,
+    binance_futures_universe,
     fetch_bundle,
     fetch_funding_bundle,
     fetch_metrics_bundle,
+    ranked_crypto_futures_universe,
 )
 from .mass_search import confirm_mass_selection, merge_mass_shards, run_mass_campaign
 from .monte_carlo import run_monte_carlo
@@ -119,6 +121,11 @@ def parser() -> argparse.ArgumentParser:
     funding_p.add_argument("--start", required=True, help="UTC date, for example 2024-01-01")
     funding_p.add_argument("--end", help="UTC date, defaults to now")
     funding_p.add_argument("--output", type=Path, required=True)
+    universe_p = commands.add_parser("futures-universe")
+    universe_p.add_argument("--quote", default="USDT")
+    universe_p.add_argument("--limit", type=int, default=200)
+    universe_p.add_argument("--ranking-pages", type=int, default=2)
+    universe_p.add_argument("--output", type=Path, required=True)
     backtest_p = commands.add_parser("backtest-loop")
     backtest_p.add_argument("--candles", type=Path, required=True)
     backtest_p.add_argument("--output", type=Path, required=True)
@@ -187,6 +194,7 @@ def parser() -> argparse.ArgumentParser:
     derivatives_p.add_argument("--cost-bps", type=float, default=25)
     derivatives_p.add_argument("--max-recipes", type=int, default=250_000)
     derivatives_p.add_argument("--symbol", action="append", default=[])
+    derivatives_p.add_argument("--kernel", type=Path)
     merge_derivatives_p = commands.add_parser("merge-derivatives")
     merge_derivatives_p.add_argument("--input", type=Path, action="append", required=True)
     merge_derivatives_p.add_argument("--output", type=Path, required=True)
@@ -242,6 +250,20 @@ def main() -> None:
             int(end.timestamp() * 1000),
             args.output,
         )
+    elif args.command == "futures-universe":
+        archived = binance_futures_universe(args.quote)
+        ranked = ranked_crypto_futures_universe(archived, args.limit, args.ranking_pages)
+        result = {
+            "source": "coingecko_market_cap_intersect_binance_public_archive",
+            "quote": args.quote,
+            "retrievedAt": dt.datetime.now(dt.UTC).isoformat(),
+            "archiveSymbolCount": len(archived),
+            "count": len(ranked),
+            "symbols": [row["symbol"] for row in ranked],
+            "ranking": ranked,
+        }
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(result, indent=2) + "\n")
     elif args.command == "futures-metrics-archive":
         start = dt.datetime.fromisoformat(args.start).replace(tzinfo=dt.UTC)
         end = (
@@ -291,7 +313,7 @@ def main() -> None:
                 symbol: funding["series"].get(symbol, []) for symbol in candles["series"]
             }
         result = run_derivatives_campaign(
-            candles, metrics, funding, args.cost_bps, args.max_recipes
+            candles, metrics, funding, args.cost_bps, args.max_recipes, args.kernel
         )
         write_json(args.output, result)
         result = {

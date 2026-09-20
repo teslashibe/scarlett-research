@@ -6,7 +6,9 @@ import io
 import json
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -20,6 +22,83 @@ class CandleConnector(Protocol):
     def candles(
         self, symbol: str, interval: str, start_ms: int, end_ms: int
     ) -> list[dict[str, Any]]: ...
+
+
+def _archive_prefixes(payload: bytes) -> tuple[list[str], str | None]:
+    root = ET.fromstring(payload)
+    namespace = {"s3": "http://s3.amazonaws.com/doc/2006-03-01/"}
+    prefixes = [node.text or "" for node in root.findall("s3:CommonPrefixes/s3:Prefix", namespace)]
+    token = root.findtext("s3:NextContinuationToken", default=None, namespaces=namespace)
+    return prefixes, token
+
+
+def binance_futures_universe(quote: str = "USDT") -> list[str]:
+    """List USD-M kline symbols from the public archive, independent of live API access."""
+    endpoint = "https://s3-ap-northeast-1.amazonaws.com/data.binance.vision"
+    prefix = "data/futures/um/monthly/klines/"
+    token: str | None = None
+    symbols: set[str] = set()
+    while True:
+        query = {"list-type": "2", "delimiter": "/", "prefix": prefix}
+        if token:
+            query["continuation-token"] = token
+        request = urllib.request.Request(
+            endpoint + "?" + urllib.parse.urlencode(query),
+            headers={"User-Agent": "scarlett-research/0.2"},
+        )
+        with urllib.request.urlopen(request, timeout=60) as response:
+            prefixes, token = _archive_prefixes(response.read())
+        for value in prefixes:
+            symbol = value.removeprefix(prefix).removesuffix("/")
+            if symbol.endswith(quote):
+                symbols.add(symbol)
+        if not token:
+            break
+    return sorted(symbols)
+
+
+def ranked_crypto_futures_universe(
+    archive_symbols: list[str], limit: int = 200, pages: int = 2
+) -> list[dict[str, Any]]:
+    """Intersect an independent CoinGecko ranking with archived Binance contracts."""
+    if limit < 1 or pages < 1:
+        raise ValueError("limit and pages must be positive")
+    available = set(archive_symbols)
+    ranked: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for page in range(1, pages + 1):
+        query = urllib.parse.urlencode(
+            {
+                "vs_currency": "usd",
+                "order": "market_cap_desc",
+                "per_page": 250,
+                "page": page,
+                "sparkline": "false",
+            }
+        )
+        request = urllib.request.Request(
+            "https://api.coingecko.com/api/v3/coins/markets?" + query,
+            headers={"User-Agent": "scarlett-research/0.2"},
+        )
+        with urllib.request.urlopen(request, timeout=60) as response:
+            rows = json.load(response)
+        for row in rows:
+            symbol = str(row["symbol"]).upper() + "USDT"
+            if symbol not in available or symbol in seen:
+                continue
+            seen.add(symbol)
+            ranked.append(
+                {
+                    "symbol": symbol,
+                    "coinId": row["id"],
+                    "marketCapRank": row.get("market_cap_rank"),
+                    "marketCapUsd": row.get("market_cap"),
+                    "volume24hUsd": row.get("total_volume"),
+                }
+            )
+            if len(ranked) == limit:
+                return ranked
+    return ranked
 
 
 def normalize_market_symbol(symbol: str, source: str) -> str:
@@ -263,6 +342,7 @@ class BinanceFundingArchiveConnector:
 
 def _metrics_record(row: dict[str, str]) -> dict[str, Any]:
     timestamp = dt.datetime.fromisoformat(row["create_time"]).replace(tzinfo=dt.UTC)
+
     def optional_float(name: str) -> float | None:
         value = row.get(name, "").strip()
         return float(value) if value else None
@@ -272,12 +352,8 @@ def _metrics_record(row: dict[str, str]) -> dict[str, Any]:
         "symbol": row["symbol"],
         "openInterest": optional_float("sum_open_interest"),
         "openInterestValue": optional_float("sum_open_interest_value"),
-        "topTraderAccountLongShortRatio": optional_float(
-            "count_toptrader_long_short_ratio"
-        ),
-        "topTraderPositionLongShortRatio": optional_float(
-            "sum_toptrader_long_short_ratio"
-        ),
+        "topTraderAccountLongShortRatio": optional_float("count_toptrader_long_short_ratio"),
+        "topTraderPositionLongShortRatio": optional_float("sum_toptrader_long_short_ratio"),
         "globalLongShortRatio": optional_float("count_long_short_ratio"),
         "takerLongShortVolumeRatio": optional_float("sum_taker_long_short_vol_ratio"),
     }

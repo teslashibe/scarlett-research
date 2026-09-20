@@ -51,6 +51,16 @@ scarlett-research candles-archive --symbol BTCUSDT --symbol ETHUSDT --interval 1
 # Independent cross-venue confirmation from Binance USD-M futures archives
 scarlett-research candles-archive --market um_futures --symbol BTCUSDT --symbol ETHUSDT \
   --interval 1h --start 2020-01-01 --output data/binance-futures-1h.json
+
+# Freeze a broad crypto universe independently of backtest performance
+scarlett-research futures-universe --limit 200 \
+  --output data/binance-futures-universe.json
+
+# Use the parity-tested multicore kernel for large derivatives campaigns
+go build -C kernel -o ../.local/derivatives-kernel ./cmd/derivatives-kernel
+scarlett-research derivatives-loop --candles data/futures-5m.json \
+  --metrics data/futures-metrics-5m.json --funding data/funding.json \
+  --kernel .local/derivatives-kernel --output runs/derivatives.json
 ```
 
 For live public and account-scoped data:
@@ -76,6 +86,8 @@ confirmation window or launches a live strategy.
 - `ta` runs local closed-bar SMA, EMA, or RSI analysis with supported resampling
 - `candles-fetch` downloads keyless public Hyperliquid candles into a provenance bundle
 - `candles-archive` downloads multi-year monthly Binance Spot or USD-M futures archives without an API key
+- `futures-universe` freezes an independent market-cap-ranked crypto universe intersected with the public archive
+- `derivatives-loop` searches causal positioning, funding, and price-regime recipes with an optional multicore Go kernel
 - `backtest-loop` searches bounded indicator rules using next-bar fills and a 60/20/20 walk-forward protocol
 - `catalogue-loop` audits every registered TA function and screens causal outputs without reading confirmation data
 - `select-forward` applies conservative ranking and asset, function, and category caps before paper promotion
