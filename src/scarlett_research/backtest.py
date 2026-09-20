@@ -4,6 +4,7 @@ import hashlib
 import itertools
 import json
 import math
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -23,11 +24,13 @@ def _signal(closes: list[float], rule: Rule) -> list[int]:
     fast = indicator(closes, "ema" if rule.kind == "ema_cross" else "sma", rule.fast)
     slow = indicator(closes, "sma", rule.slow)
     output = [0] * len(closes)
-    if rule.kind in {"sma_cross", "ema_cross"}:
+    if rule.kind in {"sma_cross", "ema_cross", "trend_state"}:
         for index in range(1, len(closes)):
             if None in (fast[index - 1], slow[index - 1], fast[index], slow[index]):
                 continue
-            if fast[index - 1] <= slow[index - 1] and fast[index] > slow[index]:
+            if rule.kind == "trend_state":
+                output[index] = 1 if fast[index] > slow[index] else -1
+            elif fast[index - 1] <= slow[index - 1] and fast[index] > slow[index]:
                 output[index] = 1
             elif fast[index - 1] >= slow[index - 1] and fast[index] < slow[index]:
                 output[index] = -1
@@ -42,6 +45,13 @@ def _signal(closes: list[float], rule: Rule) -> list[int]:
         for index, value in enumerate(rsi):
             if value is not None:
                 output[index] = 1 if value < rule.fast else (-1 if value > 100 - rule.fast else 0)
+    elif rule.kind == "rsi_momentum":
+        rsi = indicator(closes, "rsi", rule.slow)
+        for index, value in enumerate(rsi):
+            if value is not None:
+                output[index] = (
+                    1 if value > 50 + rule.fast else (-1 if value < 50 - rule.fast else 0)
+                )
     if rule.side == "long":
         return [max(value, 0) for value in output]
     if rule.side == "short":
@@ -106,7 +116,47 @@ def rules(max_rules: int = 500) -> list[Rule]:
         (12, 24, 48, 96), (4, 8, 16, 32), ("long", "short", "both")
     ):
         family.append(Rule("breakout", 2, window, hold, side))
+    for fast, slow, hold, side in itertools.product(
+        (3, 5, 8, 13), (21, 34, 55, 89), (4, 8, 16, 32), ("long", "short", "both")
+    ):
+        family.append(Rule("trend_state", fast, slow, hold, side))
+    for threshold, period, hold, side in itertools.product(
+        (5, 10, 15), (7, 14, 21), (4, 8, 16), ("long", "short", "both")
+    ):
+        family.append(Rule("rsi_momentum", threshold, period, hold, side))
     return family[:max_rules]
+
+
+def _evaluate_symbol(args: tuple[str, list[dict[str, Any]], float, int, int]) -> dict[str, Any]:
+    symbol, candles, cost_bps, max_rules, min_confirmation_trades = args
+    first, second = math.floor(len(candles) * 0.6), math.floor(len(candles) * 0.8)
+    development, validation, confirmation = candles[:first], candles[first:second], candles[second:]
+    ranked = sorted(
+        (backtest(development, rule, cost_bps) for rule in rules(max_rules)),
+        key=lambda row: (row["trades"] >= 10, row["meanReturn"] or -99),
+        reverse=True,
+    )
+    checked = []
+    for row in ranked[:5]:
+        valid = backtest(validation, Rule(**row["rule"]), cost_bps)
+        checked.append({"development": row, "validation": valid})
+    eligible = [
+        row
+        for row in checked
+        if row["validation"]["trades"] >= 5 and (row["validation"]["meanReturn"] or 0) > 0
+    ]
+    champion = max(eligible, key=lambda row: row["validation"]["meanReturn"], default=None)
+    if champion:
+        champion["confirmation"] = backtest(
+            confirmation, Rule(**champion["development"]["rule"]), cost_bps
+        )
+        champion["decision"] = (
+            "forward_candidate"
+            if champion["confirmation"]["trades"] >= min_confirmation_trades
+            and (champion["confirmation"]["meanReturn"] or 0) > 0
+            else "confirmation_failed"
+        )
+    return {"symbol": symbol, "bars": len(candles), "finalists": checked, "champion": champion}
 
 
 def walk_forward(
@@ -115,48 +165,16 @@ def walk_forward(
     max_rules: int = 500,
     min_confirmation_trades: int = 10,
 ) -> dict[str, Any]:
-    all_rules = rules(max_rules)
-    folds = []
-    selected = []
-    for symbol, candles in bundle["series"].items():
-        if len(candles) < 300:
-            continue
-        first, second = math.floor(len(candles) * 0.6), math.floor(len(candles) * 0.8)
-        development, validation, confirmation = (
-            candles[:first],
-            candles[first:second],
-            candles[second:],
-        )
-        ranked = sorted(
-            (backtest(development, rule, cost_bps) for rule in all_rules),
-            key=lambda row: (row["trades"] >= 10, row["meanReturn"] or -99),
-            reverse=True,
-        )
-        finalists = ranked[:5]
-        checked = []
-        for row in finalists:
-            rule = Rule(**row["rule"])
-            valid = backtest(validation, rule, cost_bps)
-            checked.append({"development": row, "validation": valid})
-        eligible = [
-            row
-            for row in checked
-            if row["validation"]["trades"] >= 5 and (row["validation"]["meanReturn"] or 0) > 0
-        ]
-        champion = max(eligible, key=lambda row: row["validation"]["meanReturn"], default=None)
-        if champion:
-            rule = Rule(**champion["development"]["rule"])
-            champion["confirmation"] = backtest(confirmation, rule, cost_bps)
-            champion["decision"] = (
-                "forward_candidate"
-                if champion["confirmation"]["trades"] >= min_confirmation_trades
-                and (champion["confirmation"]["meanReturn"] or 0) > 0
-                else "confirmation_failed"
-            )
-            selected.append({"symbol": symbol, **champion})
-        folds.append(
-            {"symbol": symbol, "bars": len(candles), "finalists": checked, "champion": champion}
-        )
+    jobs = [
+        (symbol, candles, cost_bps, max_rules, min_confirmation_trades)
+        for symbol, candles in bundle["series"].items()
+        if len(candles) >= 300
+    ]
+    with ProcessPoolExecutor(max_workers=min(8, len(jobs))) as pool:
+        folds = list(pool.map(_evaluate_symbol, jobs))
+    selected = [
+        {"symbol": fold["symbol"], **fold["champion"]} for fold in folds if fold["champion"]
+    ]
     protocol = {
         "cost_bps": cost_bps,
         "max_rules": max_rules,

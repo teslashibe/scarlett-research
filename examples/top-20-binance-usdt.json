@@ -1,0 +1,27 @@
+{
+  "asOf": "2026-09-20",
+  "selection": "Top non-stable cryptoassets by market capitalization with a Binance USDT spot archive",
+  "symbols": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "BNBUSDT",
+    "XRPUSDT",
+    "SOLUSDT",
+    "TRXUSDT",
+    "ZECUSDT",
+    "DOGEUSDT",
+    "LINKUSDT",
+    "ADAUSDT",
+    "XLMUSDT",
+    "NEARUSDT",
+    "UNIUSDT",
+    "BCHUSDT",
+    "AVAXUSDT",
+    "LTCUSDT",
+    "HBARUSDT",
+    "SUIUSDT",
+    "SHIBUSDT",
+    "TAOUSDT"
+  ],
+  "notes": "Wrapped assets, stablecoins, non-Binance assets, and exchange tokens without a Binance USDT archive are excluded. Historical availability begins at each pair's listing date."
+}

@@ -22,7 +22,7 @@
   },
   "externalCandles": {
     "provider": "binance_spot_archive",
-    "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "ZECUSDT"],
+    "universeFile": "examples/top-20-binance-usdt.json",
     "intervals": ["15m", "1h", "4h"],
     "start": "2020-01-01",
     "redistributeRawData": false

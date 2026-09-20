@@ -4,9 +4,11 @@ import csv
 import datetime as dt
 import io
 import json
+import time
 import urllib.error
 import urllib.request
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -91,14 +93,24 @@ class BinanceArchiveConnector:
             label = f"{month.year:04d}-{month.month:02d}"
             filename = f"{symbol}-{interval}-{label}.zip"
             url = f"{self.base_url}/{symbol}/{interval}/{filename}"
-            try:
-                with urllib.request.urlopen(url, timeout=60) as response:
-                    archive = zipfile.ZipFile(io.BytesIO(response.read()))
-            except urllib.error.HTTPError as exc:
-                if exc.code == 404:
-                    month = _next_month(month)
-                    continue
-                raise
+            archive = None
+            for attempt in range(4):
+                try:
+                    with urllib.request.urlopen(url, timeout=60) as response:
+                        archive = zipfile.ZipFile(io.BytesIO(response.read()))
+                    break
+                except urllib.error.HTTPError as exc:
+                    if exc.code == 404:
+                        break
+                    if attempt == 3:
+                        raise
+                except (urllib.error.URLError, ConnectionError, TimeoutError):
+                    if attempt == 3:
+                        raise
+                time.sleep(0.5 * (2**attempt))
+            if archive is None:
+                month = _next_month(month)
+                continue
             with archive.open(archive.namelist()[0]) as source:
                 reader = csv.reader(io.TextIOWrapper(source))
                 for row in reader:
@@ -145,7 +157,13 @@ def fetch_bundle(
     output: Path,
 ) -> dict[str, Any]:
     output.parent.mkdir(parents=True, exist_ok=True)
-    series = {symbol: connector.candles(symbol, interval, start_ms, end_ms) for symbol in symbols}
+    workers = 4 if connector.name == "binance_spot_archive" else 8
+    with ThreadPoolExecutor(max_workers=min(workers, len(symbols))) as pool:
+        fetched = pool.map(
+            lambda symbol: (symbol, connector.candles(symbol, interval, start_ms, end_ms)),
+            symbols,
+        )
+        series = dict(fetched)
     bundle = {
         "metadata": {
             "source": connector.name,
