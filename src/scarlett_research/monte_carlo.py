@@ -145,7 +145,12 @@ def run_monte_carlo(
         )
         results.append(
             {
+                "recipeId": candidate.get("recipeId"),
                 "symbol": candidate.get("symbol"),
+                "marketSymbol": candidate.get("marketSymbol"),
+                "side": candidate.get("side"),
+                "family": candidate.get("family"),
+                "sourceIds": candidate.get("sourceIds"),
                 "function": candidate.get("function"),
                 "output": candidate.get("output"),
                 "rule": candidate.get("rule"),

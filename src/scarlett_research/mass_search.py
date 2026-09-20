@@ -290,7 +290,15 @@ def merge_mass_shards(shards: list[dict[str, Any]], limit: int = 24) -> dict[str
         other = {key: value for key, value in result["protocol"].items() if key != "shard"}
         if other != comparable:
             raise ValueError("mass shard protocols do not match")
-    candidates = [candidate for result in shards for candidate in result["selected"]]
+    candidates = []
+    for result in shards:
+        catalog = result["sourceCatalog"]
+        for trial in result["trials"]:
+            if trial["status"] != "candidate":
+                continue
+            candidate = dict(trial)
+            candidate["sources"] = [catalog[item] for item in trial["sourceIds"]]
+            candidates.append(candidate)
     candidates.sort(key=lambda row: row["selectionScore"], reverse=True)
     selected = []
     assets: dict[str, int] = {}

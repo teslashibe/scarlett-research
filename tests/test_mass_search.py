@@ -48,3 +48,36 @@ def test_merge_rejects_mismatched_protocols():
     }
     with pytest.raises(ValueError, match="protocols do not match"):
         merge_mass_shards([base, other])
+
+
+def test_merge_uses_all_survivors_not_only_per_shard_shortlist():
+    source = {
+        "function": "RSI",
+        "category": "Momentum Indicators",
+        "calculation": {"id": "feature", "function": "RSI"},
+        "output": "real",
+        "rule": {"operator": "gt", "value": 50, "side": "long", "hold": 4},
+    }
+    trial = {
+        "recipeId": "a",
+        "symbol": "BTCUSDT",
+        "marketSymbol": "BTC",
+        "side": "long",
+        "family": "all_2",
+        "hold": 4,
+        "sourceIds": ["s", "s"],
+        "development": {},
+        "validation": {},
+        "status": "candidate",
+        "confirmationRead": False,
+        "selectionScore": 2.0,
+    }
+    shard = {
+        "protocol": {"family": "mass", "shards": 1, "shard": 0},
+        "evaluated": 1,
+        "sourceCatalog": {"s": source},
+        "trials": [trial],
+        "selected": [],
+    }
+    merged = merge_mass_shards([shard])
+    assert merged["selected"][0]["recipeId"] == "a"
