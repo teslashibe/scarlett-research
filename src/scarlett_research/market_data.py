@@ -77,10 +77,21 @@ class HyperliquidConnector:
 
 @dataclass
 class BinanceArchiveConnector:
-    """Public Binance Vision monthly spot-kline archive connector."""
+    """Public Binance Vision monthly spot or USD-M futures kline connector."""
 
     base_url: str = "https://data.binance.vision/data/spot/monthly/klines"
     name: str = "binance_spot_archive"
+
+    @classmethod
+    def for_market(cls, market: str) -> BinanceArchiveConnector:
+        if market == "spot":
+            return cls()
+        if market == "um_futures":
+            return cls(
+                base_url="https://data.binance.vision/data/futures/um/monthly/klines",
+                name="binance_um_futures_archive",
+            )
+        raise ValueError(f"unsupported Binance archive market: {market}")
 
     def candles(
         self, symbol: str, interval: str, start_ms: int, end_ms: int
@@ -157,7 +168,7 @@ def fetch_bundle(
     output: Path,
 ) -> dict[str, Any]:
     output.parent.mkdir(parents=True, exist_ok=True)
-    workers = 4 if connector.name == "binance_spot_archive" else 8
+    workers = 4 if connector.name.startswith("binance_") else 8
     with ThreadPoolExecutor(max_workers=min(workers, len(symbols))) as pool:
         fetched = pool.map(
             lambda symbol: (symbol, connector.candles(symbol, interval, start_ms, end_ms)),
@@ -171,7 +182,11 @@ def fetch_bundle(
             "startTime": start_ms,
             "endTime": end_ms,
             "retrievedAt": dt.datetime.now(dt.UTC).isoformat(),
-            "limits": "Provider returns at most the most recent 5000 candles per request",
+            "limits": (
+                "Monthly archive files; unavailable symbol-months are skipped"
+                if connector.name.startswith("binance_")
+                else "Provider returns at most the most recent 5000 candles per request"
+            ),
         },
         "series": series,
     }

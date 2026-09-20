@@ -86,6 +86,7 @@ def parser() -> argparse.ArgumentParser:
     archive_p = commands.add_parser("candles-archive")
     archive_p.add_argument("--symbol", action="append", required=True)
     archive_p.add_argument("--interval", default="1h")
+    archive_p.add_argument("--market", choices=("spot", "um_futures"), default="spot")
     archive_p.add_argument("--start", required=True, help="UTC date, for example 2020-01-01")
     archive_p.add_argument("--end", help="UTC date, defaults to now")
     archive_p.add_argument("--output", type=Path, required=True)
@@ -130,7 +131,7 @@ def main() -> None:
             else dt.datetime.now(dt.UTC)
         )
         result = fetch_bundle(
-            BinanceArchiveConnector(),
+            BinanceArchiveConnector.for_market(args.market),
             args.symbol,
             args.interval,
             int(start.timestamp() * 1000),

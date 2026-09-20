@@ -1,7 +1,7 @@
 import datetime as dt
 
 from scarlett_research.backtest import Rule, backtest, walk_forward
-from scarlett_research.market_data import _next_month
+from scarlett_research.market_data import BinanceArchiveConnector, _next_month
 
 
 def candles(count: int, drift: float = 0.001):
@@ -44,3 +44,12 @@ def test_archive_month_rollover():
     assert _next_month(dt.datetime(2025, 12, 1, tzinfo=dt.UTC)) == dt.datetime(
         2026, 1, 1, tzinfo=dt.UTC
     )
+
+
+def test_archive_market_selection():
+    spot = BinanceArchiveConnector.for_market("spot")
+    futures = BinanceArchiveConnector.for_market("um_futures")
+    assert spot.name == "binance_spot_archive"
+    assert "/spot/" in spot.base_url
+    assert futures.name == "binance_um_futures_archive"
+    assert "/futures/um/" in futures.base_url
