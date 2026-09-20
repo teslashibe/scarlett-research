@@ -70,8 +70,7 @@ def masked_returns(
 ) -> list[float]:
     """Evaluate next-open, non-overlapping trades from a compact causal signal mask."""
     return [
-        row["return"]
-        for row in masked_outcomes(candles, mask, hold, cost_bps, start, end, side)
+        row["return"] for row in masked_outcomes(candles, mask, hold, cost_bps, start, end, side)
     ]
 
 
@@ -156,6 +155,34 @@ def _recipes(sources: list[dict[str, Any]]) -> Iterable[tuple[str, tuple[dict[st
             yield "all_3", triple
 
 
+def _recipe_count(sources: list[dict[str, Any]]) -> int:
+    counts = {"long": 0, "short": 0}
+    for source in sources:
+        counts[source["rule"].side] += 1
+    return sum(2 * math.comb(count, 2) + math.comb(count, 3) for count in counts.values())
+
+
+def _balanced_budgets(capacities: dict[str, int], maximum: int) -> dict[str, int]:
+    """Water-fill a global recipe limit so no alphabetically early asset can consume it."""
+    budgets = {symbol: 0 for symbol in capacities}
+    active = [symbol for symbol in sorted(capacities) if capacities[symbol] > 0]
+    remaining = min(maximum, sum(capacities.values()))
+    while active and remaining:
+        share = max(1, remaining // len(active))
+        next_active = []
+        for symbol in active:
+            available = capacities[symbol] - budgets[symbol]
+            granted = min(share, available, remaining)
+            budgets[symbol] += granted
+            remaining -= granted
+            if budgets[symbol] < capacities[symbol]:
+                next_active.append(symbol)
+            if not remaining:
+                break
+        active = next_active
+    return budgets
+
+
 def _combine(family: str, masks: list[int]) -> int:
     if family.startswith("all_"):
         value = masks[0]
@@ -186,10 +213,7 @@ def run_mass_campaign(
     by_symbol: dict[str, list[dict[str, Any]]] = {}
     for candidate in catalogue_campaign["candidates"]:
         by_symbol.setdefault(candidate["symbol"], []).append(candidate)
-    trials: list[dict[str, Any]] = []
-    survivors: list[dict[str, Any]] = []
-    source_catalog: dict[str, dict[str, Any]] = {}
-    enumerated = 0
+    prepared: dict[str, tuple[list[dict[str, Any]], list[dict[str, Any]]]] = {}
     for symbol in sorted(by_symbol):
         candles = bundle["series"].get(symbol, [])
         if not candles:
@@ -200,11 +224,24 @@ def run_mass_campaign(
             unique.setdefault(_source_key(candidate), candidate)
         source_candidates = list(unique.values())[:source_limit_per_symbol]
         calculated = _calculated_sources(binary, candles, source_candidates)
+        prepared[symbol] = (source_candidates, calculated)
+
+    capacities = {symbol: _recipe_count(calculated) for symbol, (_, calculated) in prepared.items()}
+    budgets = _balanced_budgets(capacities, max_recipes)
+    trials: list[dict[str, Any]] = []
+    survivors: list[dict[str, Any]] = []
+    source_catalog: dict[str, dict[str, Any]] = {}
+    enumerated = 0
+    for symbol in sorted(prepared):
+        candles = bundle["series"][symbol]
+        source_candidates, calculated = prepared[symbol]
         by_key = {_source_key(row["candidate"]): row for row in calculated}
         first, second = int(len(candles) * 0.6), int(len(candles) * 0.8)
+        symbol_enumerated = 0
         for family, source_tuple in _recipes(calculated):
-            if enumerated >= max_recipes:
+            if symbol_enumerated >= budgets[symbol]:
                 break
+            symbol_enumerated += 1
             enumerated += 1
             candidates = [row["candidate"] for row in source_tuple]
             source_ids = [_source_id(candidate) for candidate in candidates]
@@ -217,9 +254,7 @@ def run_mass_campaign(
             side = 1 if source_tuple[0]["rule"].side == "long" else -1
             mask = _combine(family, [by_key[_source_key(row)]["mask"] for row in candidates])
             development_returns = masked_returns(candles, mask, hold, cost_bps, 0, first, side)
-            validation_returns = masked_returns(
-                candles, mask, hold, cost_bps, first, second, side
-            )
+            validation_returns = masked_returns(candles, mask, hold, cost_bps, first, second, side)
             development = return_metrics(development_returns)
             validation = return_metrics(validation_returns)
             passed = bool(
@@ -244,12 +279,10 @@ def run_mass_campaign(
             trials.append(trial)
             if passed:
                 effect = min(development["meanReturn"], validation["meanReturn"])
-                trial["selectionScore"] = effect * math.sqrt(validation["trades"]) / (
-                    1 + validation["maxDrawdown"]
+                trial["selectionScore"] = (
+                    effect * math.sqrt(validation["trades"]) / (1 + validation["maxDrawdown"])
                 )
                 survivors.append(trial)
-        if enumerated >= max_recipes:
-            break
     survivors.sort(key=lambda row: row["selectionScore"], reverse=True)
     selected = []
     for survivor in survivors[:24]:
@@ -268,6 +301,8 @@ def run_mass_campaign(
             "nonOverlapping": True,
             "sourceLimitPerSymbol": source_limit_per_symbol,
             "maxRecipes": max_recipes,
+            "allocation": "balanced_water_fill_by_symbol",
+            "recipeBudgetBySymbol": budgets,
             "shards": shards,
             "shard": shard,
         },
@@ -307,8 +342,10 @@ def merge_mass_shards(shards: list[dict[str, Any]], limit: int = 24) -> dict[str
     for candidate in candidates:
         if candidate["recipeId"] in seen:
             continue
-        structure = candidate["family"] + ":" + "+".join(
-            sorted(source["function"] for source in candidate["sources"])
+        structure = (
+            candidate["family"]
+            + ":"
+            + "+".join(sorted(source["function"] for source in candidate["sources"]))
         )
         if assets.get(candidate["symbol"], 0) >= 3 or structures.get(structure, 0) >= 2:
             continue

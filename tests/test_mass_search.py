@@ -2,12 +2,30 @@ import pytest
 
 from scarlett_research.catalogue import SignalRule
 from scarlett_research.mass_search import (
+    _balanced_budgets,
     _combine,
+    _recipe_count,
     _recipe_id,
     _signal_mask,
     masked_returns,
     merge_mass_shards,
 )
+
+
+def test_recipe_budget_is_balanced_and_redistributes_unused_capacity():
+    assert _balanced_budgets({"ADA": 100, "BTC": 100, "ETH": 2}, 12) == {
+        "ADA": 5,
+        "BTC": 5,
+        "ETH": 2,
+    }
+
+
+def test_recipe_count_matches_enumeration_families():
+    sources = [
+        {"rule": SignalRule("gt", 0, side, 1)}
+        for side in ("long", "long", "long", "short", "short")
+    ]
+    assert _recipe_count(sources) == 2 * (3 + 1) + 1
 
 
 def test_masks_combine_as_deployable_all_and_any_expressions():
