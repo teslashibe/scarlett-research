@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import bisect
+import datetime as dt
 import hashlib
 import itertools
 import json
@@ -21,15 +22,18 @@ def merge_series_bundles(bundles: list[dict[str, Any]]) -> dict[str, list[dict[s
     return merged
 
 
-def carry_recipes() -> list[dict[str, Any]]:
+def carry_recipes(orientation: str = "carry") -> list[dict[str, Any]]:
+    if orientation not in {"carry", "momentum"}:
+        raise ValueError("orientation must be carry or momentum")
     return [
         {
+            "orientation": orientation,
             "assetsPerSide": assets,
-            "holdFundingEvents": hold,
+            "holdHours": hold,
             "minimumSpreadBps": spread,
         }
         for assets, hold, spread in itertools.product(
-            (1, 2, 3), (1, 3, 6), (0.0, 1.0, 2.0, 5.0, 10.0)
+            (1, 2, 3), (8, 24, 48), (0.0, 1.0, 2.0, 5.0, 10.0)
         )
     ]
 
@@ -38,6 +42,15 @@ def _recipe_id(recipe: dict[str, Any]) -> str:
     return hashlib.sha256(
         json.dumps(recipe, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
+
+
+def _anchor_events(funding_by_symbol: dict[str, list[dict[str, Any]]]) -> list[str]:
+    events = {row["time"] for rows in funding_by_symbol.values() for row in rows}
+    return sorted(
+        event
+        for event in events
+        if (timestamp := dt.datetime.fromisoformat(event)).hour % 8 == 0 and timestamp.minute == 0
+    )
 
 
 def carry_outcomes(
@@ -54,7 +67,7 @@ def carry_outcomes(
         for symbol, rows in funding_by_symbol.items()
         if symbol in candles_by_symbol
     }
-    events = sorted({time for rows in funding_maps.values() for time in rows})
+    events = _anchor_events(funding_by_symbol)
     end_event = len(events) if end_event is None else min(end_event, len(events))
     ordered_candles = {
         symbol: sorted(candles, key=lambda row: row["time"])
@@ -68,13 +81,17 @@ def carry_outcomes(
         for symbol, candles in ordered_candles.items()
     }
     assets_per_side = int(recipe["assetsPerSide"])
-    hold = int(recipe["holdFundingEvents"])
+    hold_hours = int(recipe["holdHours"])
+    hold_anchors = hold_hours // 8
     minimum_spread = float(recipe["minimumSpreadBps"]) / 10_000
     outcomes = []
     event_index = start_event
-    while event_index + hold < end_event:
+    while event_index + hold_anchors < end_event:
         signal_time = events[event_index]
-        exit_time = events[event_index + hold]
+        exit_timestamp = dt.datetime.fromisoformat(signal_time)
+        exit_time = (
+            (exit_timestamp + dt.timedelta(hours=hold_hours)).isoformat().replace("+00:00", "Z")
+        )
         available = [
             (rate_map[signal_time], symbol)
             for symbol, rate_map in funding_maps.items()
@@ -87,8 +104,12 @@ def carry_outcomes(
         ):
             event_index += 1
             continue
-        longs = [symbol for _, symbol in available[:assets_per_side]]
-        shorts = [symbol for _, symbol in available[-assets_per_side:]]
+        if recipe.get("orientation", "carry") == "momentum":
+            longs = [symbol for _, symbol in available[-assets_per_side:]]
+            shorts = [symbol for _, symbol in available[:assets_per_side]]
+        else:
+            longs = [symbol for _, symbol in available[:assets_per_side]]
+            shorts = [symbol for _, symbol in available[-assets_per_side:]]
         legs = [(symbol, 1) for symbol in longs] + [(symbol, -1) for symbol in shorts]
         leg_returns = []
         funding_return = 0.0
@@ -100,8 +121,9 @@ def carry_outcomes(
                 valid = False
                 break
             future_funding = sum(
-                funding_maps[symbol].get(event, 0.0)
-                for event in events[event_index + 1 : event_index + hold + 1]
+                rate
+                for event, rate in funding_maps[symbol].items()
+                if signal_time < event <= exit_time
             )
             price_return = side * (opens[symbol][exit_index] / opens[symbol][entry_index] - 1)
             funding_leg = -side * future_funding
@@ -119,7 +141,7 @@ def carry_outcomes(
                     "fundingReturn": funding_return,
                 }
             )
-            event_index += hold
+            event_index += hold_anchors
         else:
             event_index += 1
     return outcomes
@@ -130,28 +152,45 @@ def run_carry_campaign(
     funding_bundles: list[dict[str, Any]],
     cost_bps: float = 13,
     selection_limit: int = 12,
+    orientation: str = "carry",
+    stress_cost_bps: float = 25,
 ) -> dict[str, Any]:
     candles = merge_series_bundles(candle_bundles)
     funding = merge_series_bundles(funding_bundles)
-    events = sorted({row["time"] for rows in funding.values() for row in rows})
+    events = _anchor_events(funding)
     first, second = int(len(events) * 0.6), int(len(events) * 0.8)
     trials, survivors = [], []
-    for recipe in carry_recipes():
+    for recipe in carry_recipes(orientation):
         development_outcomes = carry_outcomes(candles, funding, recipe, cost_bps, 0, first)
         validation_outcomes = carry_outcomes(candles, funding, recipe, cost_bps, first, second)
         development = return_metrics([row["return"] for row in development_outcomes])
         validation = return_metrics([row["return"] for row in validation_outcomes])
+        stress_increment = (stress_cost_bps - cost_bps) / 10_000
+        development_stress_mean = (
+            development["meanReturn"] - stress_increment
+            if development["meanReturn"] is not None
+            else None
+        )
+        validation_stress_mean = (
+            validation["meanReturn"] - stress_increment
+            if validation["meanReturn"] is not None
+            else None
+        )
         passed = bool(
             development["trades"] >= 30
             and validation["trades"] >= 10
             and (development["meanReturn"] or 0) > 0
             and (validation["meanReturn"] or 0) > 0
+            and (development_stress_mean or 0) > 0
+            and (validation_stress_mean or 0) > 0
         )
         trial = {
             "recipeId": _recipe_id(recipe),
             "recipe": recipe,
             "development": development,
             "validation": validation,
+            "developmentStressMeanReturn": development_stress_mean,
+            "validationStressMeanReturn": validation_stress_mean,
             "status": "candidate" if passed else "rejected",
             "confirmationRead": False,
         }
@@ -167,7 +206,7 @@ def run_carry_campaign(
     selected = survivors[:selection_limit]
     return {
         "protocol": {
-            "family": "cross_sectional_funding_carry",
+            "family": f"cross_sectional_funding_{orientation}",
             "split": [0.6, 0.2, 0.2],
             "selectionUses": ["development", "validation"],
             "confirmationRead": False,
@@ -176,6 +215,7 @@ def run_carry_campaign(
             "fundingCashflows": "future_events_during_holding_period_only",
             "marketNeutral": True,
             "costBpsPerLegRoundTrip": cost_bps,
+            "selectionStressCostBpsPerLegRoundTrip": stress_cost_bps,
             "nonOverlapping": True,
             "recipeCount": len(trials),
         },
@@ -198,7 +238,7 @@ def confirm_carry_selection(
 ) -> dict[str, Any]:
     candles = merge_series_bundles(candle_bundles)
     funding = merge_series_bundles(funding_bundles)
-    events = sorted({row["time"] for rows in funding.values() for row in rows})
+    events = _anchor_events(funding)
     start = 0 if full_history else int(len(events) * 0.8)
     results = []
     for candidate in selection["selected"]:
@@ -234,7 +274,7 @@ def confirm_carry_selection(
     supported = sum(row["supportedUnderTestConditions"] for row in results)
     return {
         "protocol": {
-            "family": "cross_sectional_funding_carry",
+            "family": selection["protocol"]["family"],
             "partition": (
                 "full_history_independent_asset_transfer"
                 if full_history

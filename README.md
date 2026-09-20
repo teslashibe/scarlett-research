@@ -64,7 +64,8 @@ scarlett-research derivatives-loop --candles data/futures-5m.json \
 
 # Search a market-neutral cross-sectional funding-carry family
 scarlett-research carry-loop --candles data/futures-5m.json \
-  --funding data/funding.json --cost-bps 13 --output runs/carry-selection.json
+  --funding data/funding.json --cost-bps 13 --stress-cost-bps 25 \
+  --output runs/carry-selection.json
 scarlett-research confirm-carry --candles data/futures-5m.json \
   --funding data/funding.json --selection runs/carry-selection.json \
   --cost-bps 13 --stress-cost-bps 25 --output runs/carry-confirmation.json

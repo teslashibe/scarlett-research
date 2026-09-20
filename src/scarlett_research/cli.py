@@ -233,6 +233,8 @@ def parser() -> argparse.ArgumentParser:
     carry_p.add_argument("--output", type=Path, required=True)
     carry_p.add_argument("--cost-bps", type=float, default=13)
     carry_p.add_argument("--selection-limit", type=int, default=12)
+    carry_p.add_argument("--orientation", choices=("carry", "momentum"), default="carry")
+    carry_p.add_argument("--stress-cost-bps", type=float, default=25)
     confirm_carry_p = commands.add_parser("confirm-carry")
     confirm_carry_p.add_argument("--candles", type=Path, action="append", required=True)
     confirm_carry_p.add_argument("--funding", type=Path, action="append", required=True)
@@ -399,6 +401,8 @@ def main() -> None:
             [load(path) for path in args.funding],
             args.cost_bps,
             args.selection_limit,
+            args.orientation,
+            args.stress_cost_bps,
         )
         write_json(args.output, result)
         result = {

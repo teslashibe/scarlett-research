@@ -25,7 +25,7 @@ def test_carry_uses_published_rate_then_enters_on_next_candle():
     outcomes = carry_outcomes(
         candles,
         funding,
-        {"assetsPerSide": 1, "holdFundingEvents": 1, "minimumSpreadBps": 0},
+        {"assetsPerSide": 1, "holdHours": 8, "minimumSpreadBps": 0},
         cost_bps=1,
     )
     assert outcomes[0]["longs"] == ["AUSDT"]
@@ -39,3 +39,32 @@ def test_bundle_merge_rejects_duplicate_symbols():
     bundle = {"series": {"BTCUSDT": []}}
     with pytest.raises(ValueError, match="duplicate symbol"):
         merge_series_bundles([bundle, bundle])
+
+
+def test_momentum_orientation_reverses_the_funding_ranked_legs():
+    candles = {
+        symbol: [
+            {"time": _time(0), "open": 100.0},
+            {"time": _time(0, 5), "open": 100.0},
+            {"time": _time(8), "open": 100.0},
+        ]
+        for symbol in ("LOWUSDT", "HIGHUSDT")
+    }
+    funding = {
+        "LOWUSDT": [{"time": _time(hour), "fundingRate": -0.001} for hour in (0, 8)],
+        "HIGHUSDT": [{"time": _time(hour), "fundingRate": 0.001} for hour in (0, 8)],
+    }
+    outcomes = carry_outcomes(
+        candles,
+        funding,
+        {
+            "orientation": "momentum",
+            "assetsPerSide": 1,
+            "holdHours": 8,
+            "minimumSpreadBps": 0,
+        },
+        cost_bps=0,
+    )
+    assert outcomes[0]["longs"] == ["HIGHUSDT"]
+    assert outcomes[0]["shorts"] == ["LOWUSDT"]
+    assert outcomes[0]["fundingReturn"] == pytest.approx(-0.001)
