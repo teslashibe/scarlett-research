@@ -42,6 +42,16 @@ def load(path: Path) -> dict:
     return json.loads(path.read_text())
 
 
+def _requested_symbols(symbols: list[str], universe: Path | None) -> list[str]:
+    requested = list(symbols)
+    if universe is not None:
+        requested.extend(load(universe).get("symbols", []))
+    deduplicated = list(dict.fromkeys(requested))
+    if not deduplicated:
+        raise ValueError("at least one --symbol or --universe is required")
+    return deduplicated
+
+
 def write_report(result: dict, output: Path) -> None:
     output.mkdir(parents=True, exist_ok=True)
     (output / "results.json").write_text(json.dumps(result, indent=2) + "\n")
@@ -105,19 +115,22 @@ def parser() -> argparse.ArgumentParser:
     candles_p.add_argument("--days", type=int, default=52)
     candles_p.add_argument("--output", type=Path, required=True)
     archive_p = commands.add_parser("candles-archive")
-    archive_p.add_argument("--symbol", action="append", required=True)
+    archive_p.add_argument("--symbol", action="append", default=[])
+    archive_p.add_argument("--universe", type=Path)
     archive_p.add_argument("--interval", default="1h")
     archive_p.add_argument("--market", choices=("spot", "um_futures"), default="spot")
     archive_p.add_argument("--start", required=True, help="UTC date, for example 2020-01-01")
     archive_p.add_argument("--end", help="UTC date, defaults to now")
     archive_p.add_argument("--output", type=Path, required=True)
     metrics_p = commands.add_parser("futures-metrics-archive")
-    metrics_p.add_argument("--symbol", action="append", required=True)
+    metrics_p.add_argument("--symbol", action="append", default=[])
+    metrics_p.add_argument("--universe", type=Path)
     metrics_p.add_argument("--start", required=True, help="UTC date, for example 2024-01-01")
     metrics_p.add_argument("--end", help="UTC date, defaults to now")
     metrics_p.add_argument("--output", type=Path, required=True)
     funding_p = commands.add_parser("funding-archive")
-    funding_p.add_argument("--symbol", action="append", required=True)
+    funding_p.add_argument("--symbol", action="append", default=[])
+    funding_p.add_argument("--universe", type=Path)
     funding_p.add_argument("--start", required=True, help="UTC date, for example 2024-01-01")
     funding_p.add_argument("--end", help="UTC date, defaults to now")
     funding_p.add_argument("--output", type=Path, required=True)
@@ -244,7 +257,7 @@ def main() -> None:
         )
         result = fetch_bundle(
             BinanceArchiveConnector.for_market(args.market),
-            args.symbol,
+            _requested_symbols(args.symbol, args.universe),
             args.interval,
             int(start.timestamp() * 1000),
             int(end.timestamp() * 1000),
@@ -273,7 +286,7 @@ def main() -> None:
         )
         result = fetch_metrics_bundle(
             BinanceFuturesMetricsConnector(),
-            args.symbol,
+            _requested_symbols(args.symbol, args.universe),
             int(start.timestamp() * 1000),
             int(end.timestamp() * 1000),
             args.output,
@@ -287,7 +300,7 @@ def main() -> None:
         )
         result = fetch_funding_bundle(
             BinanceFundingArchiveConnector(),
-            args.symbol,
+            _requested_symbols(args.symbol, args.universe),
             int(start.timestamp() * 1000),
             int(end.timestamp() * 1000),
             args.output,

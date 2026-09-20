@@ -63,6 +63,54 @@ scarlett-research derivatives-loop --candles data/futures-5m.json \
   --kernel .local/derivatives-kernel --output runs/derivatives.json
 ```
 
+## Scaling research
+
+The Go batch kernel is the preferred engine for large derivatives searches. On an Apple
+Silicon workstation, the checked-in benchmark evaluated 300 recipes over 175,104 bars in
+0.53 seconds end to end, versus 11.15 seconds for the optimized Python kernel: a 21.0x
+speedup with recipe-by-recipe numerical parity. Reproduce the measurement instead of
+assuming the same result on other hardware:
+
+```bash
+python benchmarks/kernel_benchmark.py --recipes 300
+```
+
+A real six-asset campaign evaluated 426,240 five-minute recipes in about 36 seconds of
+search wall time using six concurrent asset shards. The Go boundary still serializes one
+feature matrix per process, so use one shard per physical core only when memory allows.
+Fewer concurrent shards are often faster on smaller machines.
+
+The broad-universe workflow deliberately separates cheap coverage from expensive depth:
+
+1. Freeze a 200-asset manifest before viewing strategy results
+2. Fetch coarse candles for all eligible assets and reject incomplete histories
+3. Use development and validation periods to prioritize asset-family cells
+4. Fetch five-minute positioning and funding data only for the frozen shortlist
+5. Run one deterministic Go shard per asset and merge a diversity-capped family
+6. Open the final chronological partition once, apply Holm correction, then run Monte Carlo
+7. Paper deploy only candidates that survive base costs, stress costs, and every evidence gate
+
+Archive commands accept the frozen manifest directly:
+
+```bash
+scarlett-research candles-archive --market um_futures \
+  --universe data/binance-futures-universe.json --interval 4h \
+  --start 2022-01-01 --end 2024-12-31 --output data/universe-4h.json
+
+scarlett-research futures-metrics-archive \
+  --universe data/shortlist.json --start 2025-01-01 \
+  --output data/shortlist-metrics.json
+
+scarlett-research funding-archive \
+  --universe data/shortlist.json --start 2025-01-01 \
+  --output data/shortlist-funding.json
+```
+
+Raw throughput does not create evidence. Every additional asset, threshold, and recipe
+increases the multiple-testing burden. A manifest entry is not a tested asset, and a
+development survivor is not an edge. Campaign artifacts record the engine and keep the
+confirmation partition closed until the family is frozen.
+
 For live public and account-scoped data:
 
 ```bash
