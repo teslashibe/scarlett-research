@@ -12,8 +12,20 @@ from .catalogue import confirm_selection, run_catalogue_campaign
 from .client import ScarlettClient
 from .composites import run_composite_campaign
 from .demo import write_demo
+from .derivatives import (
+    confirm_derivatives_selection,
+    merge_derivatives_campaigns,
+    run_derivatives_campaign,
+    write_json,
+)
 from .evaluation import Candidate, dataset_summary, metrics_dict, score
-from .market_data import BinanceArchiveConnector, HyperliquidConnector, fetch_bundle
+from .market_data import (
+    BinanceArchiveConnector,
+    BinanceFuturesMetricsConnector,
+    HyperliquidConnector,
+    fetch_bundle,
+    fetch_metrics_bundle,
+)
 from .mass_search import confirm_mass_selection, merge_mass_shards, run_mass_campaign
 from .monte_carlo import run_monte_carlo
 from .search import run_search
@@ -95,6 +107,11 @@ def parser() -> argparse.ArgumentParser:
     archive_p.add_argument("--start", required=True, help="UTC date, for example 2020-01-01")
     archive_p.add_argument("--end", help="UTC date, defaults to now")
     archive_p.add_argument("--output", type=Path, required=True)
+    metrics_p = commands.add_parser("futures-metrics-archive")
+    metrics_p.add_argument("--symbol", action="append", required=True)
+    metrics_p.add_argument("--start", required=True, help="UTC date, for example 2024-01-01")
+    metrics_p.add_argument("--end", help="UTC date, defaults to now")
+    metrics_p.add_argument("--output", type=Path, required=True)
     backtest_p = commands.add_parser("backtest-loop")
     backtest_p.add_argument("--candles", type=Path, required=True)
     backtest_p.add_argument("--output", type=Path, required=True)
@@ -155,6 +172,24 @@ def parser() -> argparse.ArgumentParser:
     confirm_mass_p.add_argument("--output", type=Path, required=True)
     confirm_mass_p.add_argument("--cost-bps", type=float, default=25)
     confirm_mass_p.add_argument("--stress-cost-bps", type=float, default=50)
+    derivatives_p = commands.add_parser("derivatives-loop")
+    derivatives_p.add_argument("--candles", type=Path, required=True)
+    derivatives_p.add_argument("--metrics", type=Path, required=True)
+    derivatives_p.add_argument("--output", type=Path, required=True)
+    derivatives_p.add_argument("--cost-bps", type=float, default=25)
+    derivatives_p.add_argument("--max-recipes", type=int, default=250_000)
+    derivatives_p.add_argument("--symbol", action="append", default=[])
+    merge_derivatives_p = commands.add_parser("merge-derivatives")
+    merge_derivatives_p.add_argument("--input", type=Path, action="append", required=True)
+    merge_derivatives_p.add_argument("--output", type=Path, required=True)
+    merge_derivatives_p.add_argument("--limit", type=int, default=24)
+    confirm_derivatives_p = commands.add_parser("confirm-derivatives")
+    confirm_derivatives_p.add_argument("--candles", type=Path, required=True)
+    confirm_derivatives_p.add_argument("--metrics", type=Path, required=True)
+    confirm_derivatives_p.add_argument("--selection", type=Path, required=True)
+    confirm_derivatives_p.add_argument("--output", type=Path, required=True)
+    confirm_derivatives_p.add_argument("--cost-bps", type=float, default=25)
+    confirm_derivatives_p.add_argument("--stress-cost-bps", type=float, default=50)
     return root
 
 
@@ -198,10 +233,71 @@ def main() -> None:
             int(end.timestamp() * 1000),
             args.output,
         )
+    elif args.command == "futures-metrics-archive":
+        start = dt.datetime.fromisoformat(args.start).replace(tzinfo=dt.UTC)
+        end = (
+            dt.datetime.fromisoformat(args.end).replace(tzinfo=dt.UTC)
+            if args.end
+            else dt.datetime.now(dt.UTC)
+        )
+        result = fetch_metrics_bundle(
+            BinanceFuturesMetricsConnector(),
+            args.symbol,
+            int(start.timestamp() * 1000),
+            int(end.timestamp() * 1000),
+            args.output,
+        )
     elif args.command == "backtest-loop":
         result = walk_forward(load(args.candles), args.cost_bps, args.max_rules)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(result, indent=2) + "\n")
+    elif args.command == "derivatives-loop":
+        candles, metrics = load(args.candles), load(args.metrics)
+        if args.symbol:
+            candles["series"] = {
+                symbol: candles["series"][symbol]
+                for symbol in args.symbol
+                if symbol in candles["series"]
+            }
+            metrics["series"] = {
+                symbol: metrics["series"].get(symbol, []) for symbol in candles["series"]
+            }
+        result = run_derivatives_campaign(
+            candles, metrics, args.cost_bps, args.max_recipes
+        )
+        write_json(args.output, result)
+        result = {
+            "output": str(args.output),
+            "evaluated": result["evaluated"],
+            "survivors": result["survivors"],
+            "selected": len(result["selected"]),
+            "confirmationRead": result["protocol"]["confirmationRead"],
+        }
+    elif args.command == "merge-derivatives":
+        result = merge_derivatives_campaigns([load(path) for path in args.input], args.limit)
+        write_json(args.output, result)
+        result = {
+            "output": str(args.output),
+            "evaluated": result["evaluated"],
+            "survivors": result["survivors"],
+            "selected": len(result["selected"]),
+            "confirmationRead": result["protocol"]["confirmationRead"],
+        }
+    elif args.command == "confirm-derivatives":
+        result = confirm_derivatives_selection(
+            load(args.candles),
+            load(args.metrics),
+            load(args.selection),
+            args.cost_bps,
+            args.stress_cost_bps,
+        )
+        write_json(args.output, result)
+        result = {
+            "output": str(args.output),
+            "tested": len(result["results"]),
+            "supported": result["supported"],
+            "conclusion": result["conclusion"],
+        }
     elif args.command == "catalogue-loop":
         result = run_catalogue_campaign(
             args.binary,

@@ -167,6 +167,71 @@ class BinanceArchiveConnector:
         return sorted(output, key=lambda row: row["time"])
 
 
+@dataclass
+class BinanceFuturesMetricsConnector:
+    """Public Binance Vision daily USD-M positioning and open-interest connector."""
+
+    base_url: str = "https://data.binance.vision/data/futures/um/daily/metrics"
+    name: str = "binance_um_futures_metrics_archive"
+
+    def metrics(self, symbol: str, start_ms: int, end_ms: int) -> list[dict[str, Any]]:
+        day = dt.datetime.fromtimestamp(start_ms / 1000, dt.UTC).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        end = dt.datetime.fromtimestamp(end_ms / 1000, dt.UTC)
+        output = []
+        while day <= end:
+            label = day.strftime("%Y-%m-%d")
+            filename = f"{symbol}-metrics-{label}.zip"
+            url = f"{self.base_url}/{symbol}/{filename}"
+            archive = None
+            for attempt in range(4):
+                try:
+                    with urllib.request.urlopen(url, timeout=60) as response:
+                        archive = zipfile.ZipFile(io.BytesIO(response.read()))
+                    break
+                except urllib.error.HTTPError as exc:
+                    if exc.code == 404:
+                        break
+                    if attempt == 3:
+                        raise
+                except (urllib.error.URLError, ConnectionError, TimeoutError):
+                    if attempt == 3:
+                        raise
+                time.sleep(0.5 * (2**attempt))
+            if archive is not None:
+                with archive.open(archive.namelist()[0]) as source:
+                    for row in csv.DictReader(io.TextIOWrapper(source)):
+                        record = _metrics_record(row)
+                        timestamp = dt.datetime.fromisoformat(record["time"])
+                        if start_ms <= timestamp.timestamp() * 1000 <= end_ms:
+                            output.append(record)
+            day += dt.timedelta(days=1)
+        return output
+
+
+def _metrics_record(row: dict[str, str]) -> dict[str, Any]:
+    timestamp = dt.datetime.fromisoformat(row["create_time"]).replace(tzinfo=dt.UTC)
+    def optional_float(name: str) -> float | None:
+        value = row.get(name, "").strip()
+        return float(value) if value else None
+
+    return {
+        "time": timestamp.isoformat().replace("+00:00", "Z"),
+        "symbol": row["symbol"],
+        "openInterest": optional_float("sum_open_interest"),
+        "openInterestValue": optional_float("sum_open_interest_value"),
+        "topTraderAccountLongShortRatio": optional_float(
+            "count_toptrader_long_short_ratio"
+        ),
+        "topTraderPositionLongShortRatio": optional_float(
+            "sum_toptrader_long_short_ratio"
+        ),
+        "globalLongShortRatio": optional_float("count_long_short_ratio"),
+        "takerLongShortVolumeRatio": optional_float("sum_taker_long_short_vol_ratio"),
+    }
+
+
 def _next_month(value: dt.datetime) -> dt.datetime:
     return dt.datetime(value.year + (value.month == 12), value.month % 12 + 1, 1, tzinfo=dt.UTC)
 
@@ -203,6 +268,34 @@ def fetch_bundle(
                 if connector.name.startswith("binance_")
                 else "Provider returns at most the most recent 5000 candles per request"
             ),
+        },
+        "series": series,
+    }
+    output.write_text(json.dumps(bundle, indent=2) + "\n")
+    return {"output": str(output), "symbols": {key: len(value) for key, value in series.items()}}
+
+
+def fetch_metrics_bundle(
+    connector: BinanceFuturesMetricsConnector,
+    symbols: list[str],
+    start_ms: int,
+    end_ms: int,
+    output: Path,
+) -> dict[str, Any]:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with ThreadPoolExecutor(max_workers=min(8, len(symbols))) as pool:
+        fetched = pool.map(
+            lambda symbol: (symbol, connector.metrics(symbol, start_ms, end_ms)), symbols
+        )
+        series = dict(fetched)
+    bundle = {
+        "metadata": {
+            "source": connector.name,
+            "interval": "5m",
+            "startTime": start_ms,
+            "endTime": end_ms,
+            "retrievedAt": dt.datetime.now(dt.UTC).isoformat(),
+            "limits": "Daily archive files; unavailable symbol-days are skipped",
         },
         "series": series,
     }
