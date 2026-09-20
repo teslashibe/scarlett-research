@@ -1,0 +1,9 @@
+{
+  "costR": 0.05,
+  "maxCandidates": 200,
+  "minDevelopment": 20,
+  "minValidation": 10,
+  "minMeanR": 0.05,
+  "maxTopSymbolShare": 0.5
+}
+

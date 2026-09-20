@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "scarlett-research"
+version = "0.1.0"
+description = "Reproducible, bounded strategy research for the Scarlett API"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "Apache-2.0"}
+authors = [{name = "Scarlett contributors"}]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.8"]
+notebook = ["jupyter>=1.0", "nbclient>=0.10"]
+
+[project.scripts]
+scarlett-research = "scarlett_research.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/scarlett_research"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+ignore = ["BLE001"]
