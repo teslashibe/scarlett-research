@@ -68,10 +68,25 @@ def masked_returns(
     end: int,
     side: int = 1,
 ) -> list[float]:
-    """Evaluate next-open, non-overlapping trades from a compact causal signal mask."""
-    return [
-        row["return"] for row in masked_outcomes(candles, mask, hold, cost_bps, start, end, side)
-    ]
+    """Evaluate returns without allocating timestamped outcome dictionaries."""
+    if start < 0 or end > len(candles) or start >= end:
+        raise ValueError("invalid backtest partition")
+    returns = []
+    base = start
+    partition = mask >> base
+    while partition:
+        offset = (partition & -partition).bit_length() - 1
+        index = base + offset
+        entry_index, exit_index = index + 1, index + 1 + hold
+        if exit_index >= end:
+            break
+        entry = float(candles[entry_index]["open"])
+        exit_price = float(candles[exit_index]["open"])
+        returns.append(side * (exit_price / entry - 1) - cost_bps / 10_000)
+        advance = offset + hold + 2
+        base += advance
+        partition >>= advance
+    return returns
 
 
 def masked_outcomes(
@@ -87,14 +102,11 @@ def masked_outcomes(
     if start < 0 or end > len(candles) or start >= end:
         raise ValueError("invalid backtest partition")
     outcomes = []
-    cursor = start
-    partition = mask >> start
+    base = start
+    partition = mask >> base
     while partition:
         offset = (partition & -partition).bit_length() - 1
-        index = start + offset
-        if index < cursor:
-            partition &= partition - 1
-            continue
+        index = base + offset
         entry_index, exit_index = index + 1, index + 1 + hold
         if exit_index >= end:
             break
@@ -110,9 +122,9 @@ def masked_outcomes(
                 "return": side * (exit_price / entry - 1) - cost_bps / 10_000,
             }
         )
-        cursor = exit_index
-        consumed = cursor - start + 1
-        partition &= ~((1 << consumed) - 1)
+        advance = offset + hold + 2
+        base += advance
+        partition >>= advance
     return outcomes
 
 

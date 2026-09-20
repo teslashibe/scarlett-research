@@ -1,3 +1,5 @@
+import random
+
 import pytest
 
 from scarlett_research.catalogue import SignalRule
@@ -7,6 +9,7 @@ from scarlett_research.mass_search import (
     _recipe_count,
     _recipe_id,
     _signal_mask,
+    masked_outcomes,
     masked_returns,
     merge_mass_shards,
 )
@@ -40,6 +43,34 @@ def test_masked_returns_use_next_open_and_do_not_overlap():
     mask = (1 << 0) | (1 << 1) | (1 << 3)
     returns = masked_returns(candles, mask, hold=1, cost_bps=0, start=0, end=len(candles))
     assert returns == [102 / 101 - 1, 105 / 104 - 1]
+
+
+def test_return_only_kernel_matches_timestamped_outcomes():
+    candles = [{"open": value, "time": str(index)} for index, value in enumerate(range(100, 110))]
+    mask = sum(1 << index for index in (0, 1, 3, 7))
+    direct = masked_returns(candles, mask, hold=2, cost_bps=13, start=0, end=len(candles))
+    from_outcomes = [
+        row["return"] for row in masked_outcomes(candles, mask, 2, 13, 0, len(candles))
+    ]
+    assert direct == from_outcomes
+
+
+def test_optimized_kernel_matches_straightforward_scan():
+    generator = random.Random(7)
+    candles = [{"open": 100 + generator.random()} for _ in range(200)]
+    for hold in (1, 4, 16):
+        for _ in range(20):
+            mask = sum(1 << index for index in range(200) if generator.random() < 0.2)
+            expected = []
+            index = 0
+            while index + hold + 1 < len(candles):
+                if not mask & (1 << index):
+                    index += 1
+                    continue
+                entry, exit_index = index + 1, index + 1 + hold
+                expected.append(candles[exit_index]["open"] / candles[entry]["open"] - 1)
+                index = exit_index + 1
+            assert masked_returns(candles, mask, hold, 0, 0, len(candles)) == expected
 
 
 def test_recipe_identity_is_order_independent_after_canonical_source_ordering():
