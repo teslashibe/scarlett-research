@@ -31,6 +31,10 @@ scarlett-research confirm-selection --binary .local/taseries --candles data/bina
 # Search event-trigger plus regime-filter recipes while the final partition stays closed
 scarlett-research composite-loop --binary .local/taseries --candles data/binance-4h.json \
   --campaign runs/catalogue.json --output runs/composites.json
+# Deterministically shard and preserve a six-figure Boolean recipe family
+scarlett-research mass-loop --binary .local/taseries --candles data/binance-4h.json \
+  --campaign runs/catalogue.json --output runs/mass-0.json \
+  --max-recipes 250000 --shards 4 --shard 0
 # Stress a frozen confirmation result with dependence-preserving Monte Carlo paths
 scarlett-research monte-carlo --confirmation runs/confirmation.json \
   --output runs/monte-carlo.json --simulations 10000 --cost-shock-bps 25 \
@@ -74,6 +78,7 @@ confirmation window or launches a live strategy.
 - `confirm-selection` evaluates a frozen family once with after-cost stress and Holm correction
 - `composite-loop` screens deployable two-indicator recipes and retains every rejected trial
 - `monte-carlo` runs deterministic block-bootstrap cost and drawdown stress on frozen outcomes
+- `mass-loop` evaluates resumable `all`/`any` TA pairs and triples while retaining every rejection
 
 See [methodology](docs/methodology.md) for evidence limits and
 [agent workflow](docs/agent-workflow.md) for using the included skill.

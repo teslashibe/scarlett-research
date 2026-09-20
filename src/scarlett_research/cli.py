@@ -14,6 +14,7 @@ from .composites import run_composite_campaign
 from .demo import write_demo
 from .evaluation import Candidate, dataset_summary, metrics_dict, score
 from .market_data import BinanceArchiveConnector, HyperliquidConnector, fetch_bundle
+from .mass_search import run_mass_campaign
 from .monte_carlo import run_monte_carlo
 from .search import run_search
 from .steering import select_diverse
@@ -133,6 +134,16 @@ def parser() -> argparse.ArgumentParser:
     monte_p.add_argument("--allocation-fraction", type=float, default=0.10)
     monte_p.add_argument("--ruin-drawdown", type=float, default=0.20)
     monte_p.add_argument("--seed", type=int, default=20260920)
+    mass_p = commands.add_parser("mass-loop")
+    mass_p.add_argument("--binary", type=Path, required=True)
+    mass_p.add_argument("--candles", type=Path, required=True)
+    mass_p.add_argument("--campaign", type=Path, required=True)
+    mass_p.add_argument("--output", type=Path, required=True)
+    mass_p.add_argument("--cost-bps", type=float, default=25)
+    mass_p.add_argument("--source-limit-per-symbol", type=int, default=96)
+    mass_p.add_argument("--max-recipes", type=int, default=250_000)
+    mass_p.add_argument("--shards", type=int, default=1)
+    mass_p.add_argument("--shard", type=int, default=0)
     return root
 
 
@@ -262,6 +273,27 @@ def main() -> None:
             "tested": len(result["results"]),
             "passing": result["passing"],
             "simulationsPerCandidate": result["protocol"]["simulations"],
+        }
+    elif args.command == "mass-loop":
+        result = run_mass_campaign(
+            args.binary,
+            load(args.candles),
+            load(args.campaign),
+            cost_bps=args.cost_bps,
+            source_limit_per_symbol=args.source_limit_per_symbol,
+            max_recipes=args.max_recipes,
+            shards=args.shards,
+            shard=args.shard,
+        )
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(result, indent=2) + "\n")
+        result = {
+            "output": str(args.output),
+            "enumerated": result["enumerated"],
+            "evaluated": result["evaluated"],
+            "survivors": result["survivors"],
+            "selected": len(result["selected"]),
+            "confirmationRead": result["protocol"]["confirmationRead"],
         }
     elif args.command == "ta":
         source = load(args.candles)
