@@ -35,6 +35,10 @@ scarlett-research composite-loop --binary .local/taseries --candles data/binance
 scarlett-research mass-loop --binary .local/taseries --candles data/binance-4h.json \
   --campaign runs/catalogue.json --output runs/mass-0.json \
   --max-recipes 250000 --shards 4 --shard 0
+scarlett-research merge-mass --input runs/mass-0.json --input runs/mass-1.json \
+  --output runs/mass-selection.json --limit 24
+scarlett-research confirm-mass --binary .local/taseries --candles data/binance-4h.json \
+  --selection runs/mass-selection.json --output runs/mass-confirmation.json
 # Stress a frozen confirmation result with dependence-preserving Monte Carlo paths
 scarlett-research monte-carlo --confirmation runs/confirmation.json \
   --output runs/monte-carlo.json --simulations 10000 --cost-shock-bps 25 \

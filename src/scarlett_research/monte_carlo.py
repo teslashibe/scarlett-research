@@ -119,7 +119,18 @@ def run_monte_carlo(
     for index, candidate in enumerate(confirmation["results"]):
         returns = [row["return"] for row in candidate.get("outcomes", [])]
         identity = json.dumps(
-            {key: candidate.get(key) for key in ("symbol", "function", "output", "rule")},
+            {
+                key: candidate.get(key)
+                for key in (
+                    "recipeId",
+                    "symbol",
+                    "function",
+                    "output",
+                    "rule",
+                    "family",
+                    "sourceIds",
+                )
+            },
             sort_keys=True,
         ).encode()
         candidate_seed = seed ^ int.from_bytes(hashlib.sha256(identity).digest()[:8], "big")

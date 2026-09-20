@@ -8,7 +8,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-from .catalogue import SignalRule, evaluate, signals
+from .catalogue import SignalRule, evaluate, holm_adjust, sign_flip_p_value, signals
 from .composites import return_metrics
 from .steering import conservative_score
 
@@ -69,9 +69,25 @@ def masked_returns(
     side: int = 1,
 ) -> list[float]:
     """Evaluate next-open, non-overlapping trades from a compact causal signal mask."""
+    return [
+        row["return"]
+        for row in masked_outcomes(candles, mask, hold, cost_bps, start, end, side)
+    ]
+
+
+def masked_outcomes(
+    candles: list[dict[str, Any]],
+    mask: int,
+    hold: int,
+    cost_bps: float,
+    start: int,
+    end: int,
+    side: int = 1,
+) -> list[dict[str, Any]]:
+    """Return timestamped outcomes for a masked chronological partition."""
     if start < 0 or end > len(candles) or start >= end:
         raise ValueError("invalid backtest partition")
-    returns = []
+    outcomes = []
     cursor = start
     partition = mask >> start
     while partition:
@@ -85,11 +101,20 @@ def masked_returns(
             break
         entry = float(candles[entry_index]["open"])
         exit_price = float(candles[exit_index]["open"])
-        returns.append(side * (exit_price / entry - 1) - cost_bps / 10_000)
+        outcomes.append(
+            {
+                "entryIndex": entry_index,
+                "exitIndex": exit_index,
+                "entryTime": candles[entry_index].get("time"),
+                "exitTime": candles[exit_index].get("time"),
+                "side": side,
+                "return": side * (exit_price / entry - 1) - cost_bps / 10_000,
+            }
+        )
         cursor = exit_index
         consumed = cursor - start + 1
         partition &= ~((1 << consumed) - 1)
-    return returns
+    return outcomes
 
 
 def _calculated_sources(
@@ -253,4 +278,121 @@ def run_mass_campaign(
         "trials": trials,
         "selected": selected,
         "conclusion": "forward_candidates" if survivors else "no_candidate",
+    }
+
+
+def merge_mass_shards(shards: list[dict[str, Any]], limit: int = 24) -> dict[str, Any]:
+    if not shards or limit < 1:
+        raise ValueError("mass shard results and a positive limit are required")
+    protocol = dict(shards[0]["protocol"])
+    comparable = {key: value for key, value in protocol.items() if key != "shard"}
+    for result in shards[1:]:
+        other = {key: value for key, value in result["protocol"].items() if key != "shard"}
+        if other != comparable:
+            raise ValueError("mass shard protocols do not match")
+    candidates = [candidate for result in shards for candidate in result["selected"]]
+    candidates.sort(key=lambda row: row["selectionScore"], reverse=True)
+    selected = []
+    assets: dict[str, int] = {}
+    structures: dict[str, int] = {}
+    seen = set()
+    for candidate in candidates:
+        if candidate["recipeId"] in seen:
+            continue
+        structure = candidate["family"] + ":" + "+".join(
+            sorted(source["function"] for source in candidate["sources"])
+        )
+        if assets.get(candidate["symbol"], 0) >= 3 or structures.get(structure, 0) >= 2:
+            continue
+        selected.append(candidate)
+        seen.add(candidate["recipeId"])
+        assets[candidate["symbol"]] = assets.get(candidate["symbol"], 0) + 1
+        structures[structure] = structures.get(structure, 0) + 1
+        if len(selected) == limit:
+            break
+    protocol.update(
+        {
+            "shard": "merged",
+            "evaluated": sum(result["evaluated"] for result in shards),
+            "frozenConfirmationFamilySize": len(selected),
+            "confirmationRead": False,
+        }
+    )
+    return {
+        "protocol": protocol,
+        "selected": selected,
+        "coverage": {"assets": assets, "structures": structures},
+    }
+
+
+def confirm_mass_selection(
+    binary: Path,
+    bundle: dict[str, Any],
+    selection: dict[str, Any],
+    cost_bps: float = 25,
+    stress_cost_bps: float = 50,
+) -> dict[str, Any]:
+    results = []
+    for candidate in selection["selected"]:
+        candles = bundle["series"][candidate["symbol"]]
+        sources = _calculated_sources(binary, candles, candidate["sources"])
+        mask = _combine(candidate["family"], [source["mask"] for source in sources])
+        side = 1 if candidate["side"] == "long" else -1
+        start = int(len(candles) * 0.8)
+        outcomes = masked_outcomes(
+            candles, mask, candidate["hold"], cost_bps, start, len(candles), side
+        )
+        stress = masked_returns(
+            candles, mask, candidate["hold"], stress_cost_bps, start, len(candles), side
+        )
+        returns = [row["return"] for row in outcomes]
+        seed = int(candidate["recipeId"][:16], 16)
+        results.append(
+            {
+                "recipeId": candidate["recipeId"],
+                "symbol": candidate["symbol"],
+                "marketSymbol": candidate["marketSymbol"],
+                "side": candidate["side"],
+                "family": candidate["family"],
+                "hold": candidate["hold"],
+                "sourceIds": candidate["sourceIds"],
+                "sources": candidate["sources"],
+                "trades": len(returns),
+                "totalReturn": sum(returns),
+                "meanReturn": sum(returns) / len(returns) if returns else None,
+                "winRate": sum(value > 0 for value in returns) / len(returns) if returns else None,
+                "stressMeanReturn": sum(stress) / len(stress) if stress else None,
+                "rawPValue": sign_flip_p_value(returns, seed),
+                "outcomes": outcomes,
+            }
+        )
+    adjusted = holm_adjust([row["rawPValue"] for row in results])
+    for row, adjusted_p in zip(results, adjusted, strict=True):
+        row["holmAdjustedPValue"] = adjusted_p
+        row["supportedUnderTestConditions"] = bool(
+            row["trades"] >= 20
+            and (row["meanReturn"] or 0) > 0
+            and (row["stressMeanReturn"] or 0) > 0
+            and adjusted_p <= 0.05
+        )
+    return {
+        "protocol": {
+            "partition": "final_20_percent_chronological",
+            "opened": True,
+            "familySize": len(results),
+            "costBps": cost_bps,
+            "stressCostBps": stress_cost_bps,
+            "minimumTrades": 20,
+            "test": "one_sided_sign_flip_mean_greater_than_zero",
+            "multipleComparisonCorrection": "Holm family-wise alpha 0.05",
+            "fills": "next_bar_open",
+            "nonOverlapping": True,
+        },
+        "results": results,
+        "supported": sum(row["supportedUnderTestConditions"] for row in results),
+        "conclusion": (
+            "supported_under_test_conditions"
+            if any(row["supportedUnderTestConditions"] for row in results)
+            else "confirmation_failed"
+        ),
     }

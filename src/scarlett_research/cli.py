@@ -14,7 +14,7 @@ from .composites import run_composite_campaign
 from .demo import write_demo
 from .evaluation import Candidate, dataset_summary, metrics_dict, score
 from .market_data import BinanceArchiveConnector, HyperliquidConnector, fetch_bundle
-from .mass_search import run_mass_campaign
+from .mass_search import confirm_mass_selection, merge_mass_shards, run_mass_campaign
 from .monte_carlo import run_monte_carlo
 from .search import run_search
 from .steering import select_diverse
@@ -144,6 +144,17 @@ def parser() -> argparse.ArgumentParser:
     mass_p.add_argument("--max-recipes", type=int, default=250_000)
     mass_p.add_argument("--shards", type=int, default=1)
     mass_p.add_argument("--shard", type=int, default=0)
+    merge_mass_p = commands.add_parser("merge-mass")
+    merge_mass_p.add_argument("--input", type=Path, action="append", required=True)
+    merge_mass_p.add_argument("--output", type=Path, required=True)
+    merge_mass_p.add_argument("--limit", type=int, default=24)
+    confirm_mass_p = commands.add_parser("confirm-mass")
+    confirm_mass_p.add_argument("--binary", type=Path, required=True)
+    confirm_mass_p.add_argument("--candles", type=Path, required=True)
+    confirm_mass_p.add_argument("--selection", type=Path, required=True)
+    confirm_mass_p.add_argument("--output", type=Path, required=True)
+    confirm_mass_p.add_argument("--cost-bps", type=float, default=25)
+    confirm_mass_p.add_argument("--stress-cost-bps", type=float, default=50)
     return root
 
 
@@ -294,6 +305,33 @@ def main() -> None:
             "survivors": result["survivors"],
             "selected": len(result["selected"]),
             "confirmationRead": result["protocol"]["confirmationRead"],
+        }
+    elif args.command == "merge-mass":
+        result = merge_mass_shards([load(path) for path in args.input], args.limit)
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(result, indent=2) + "\n")
+        result = {
+            "output": str(args.output),
+            "evaluated": result["protocol"]["evaluated"],
+            "selected": len(result["selected"]),
+            "coverage": result["coverage"],
+            "confirmationRead": result["protocol"]["confirmationRead"],
+        }
+    elif args.command == "confirm-mass":
+        result = confirm_mass_selection(
+            args.binary,
+            load(args.candles),
+            load(args.selection),
+            args.cost_bps,
+            args.stress_cost_bps,
+        )
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(result, indent=2) + "\n")
+        result = {
+            "output": str(args.output),
+            "tested": len(result["results"]),
+            "supported": result["supported"],
+            "conclusion": result["conclusion"],
         }
     elif args.command == "ta":
         source = load(args.candles)

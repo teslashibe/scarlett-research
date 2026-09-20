@@ -1,5 +1,13 @@
+import pytest
+
 from scarlett_research.catalogue import SignalRule
-from scarlett_research.mass_search import _combine, _recipe_id, _signal_mask, masked_returns
+from scarlett_research.mass_search import (
+    _combine,
+    _recipe_id,
+    _signal_mask,
+    masked_returns,
+    merge_mass_shards,
+)
 
 
 def test_masks_combine_as_deployable_all_and_any_expressions():
@@ -25,3 +33,18 @@ def test_recipe_identity_is_order_independent_after_canonical_source_ordering():
     assert _recipe_id("BTC", "all_2", [source, source]) == _recipe_id(
         "BTC", "all_2", [source, source]
     )
+
+
+def test_merge_rejects_mismatched_protocols():
+    base = {
+        "protocol": {"family": "mass", "shards": 2, "shard": 0},
+        "evaluated": 1,
+        "selected": [],
+    }
+    other = {
+        "protocol": {"family": "different", "shards": 2, "shard": 1},
+        "evaluated": 1,
+        "selected": [],
+    }
+    with pytest.raises(ValueError, match="protocols do not match"):
+        merge_mass_shards([base, other])
