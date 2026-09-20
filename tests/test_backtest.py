@@ -1,6 +1,6 @@
 import datetime as dt
 
-from scarlett_research.backtest import Rule, backtest, walk_forward
+from scarlett_research.backtest import Rule, backtest, screen_universe, walk_forward
 from scarlett_research.market_data import (
     BinanceArchiveConnector,
     _is_archive_data_row,
@@ -43,6 +43,21 @@ def test_walk_forward_is_bounded():
     result = walk_forward({"series": {"BTC": candles(600)}}, max_rules=20)
     assert result["protocol"]["max_rules"] == 20
     assert len(result["folds"][0]["finalists"]) == 5
+
+
+def test_universe_screen_never_reads_or_emits_confirmation():
+    result = screen_universe(
+        {"series": {"BTCUSDT": candles(600), "ETHUSDT": candles(600)}},
+        max_rules=20,
+        limit=1,
+    )
+    assert result["protocol"]["selectionDataOnly"] is True
+    assert result["protocol"]["confirmationRead"] is False
+    assert all(
+        "confirmation" not in candidate
+        for fold in result["folds"]
+        for candidate in fold["candidates"]
+    )
 
 
 def test_archive_month_rollover():

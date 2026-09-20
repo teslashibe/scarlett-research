@@ -7,7 +7,7 @@ import os
 from dataclasses import asdict
 from pathlib import Path
 
-from .backtest import walk_forward
+from .backtest import screen_universe, walk_forward
 from .catalogue import confirm_selection, run_catalogue_campaign
 from .client import ScarlettClient
 from .composites import run_composite_campaign
@@ -144,6 +144,12 @@ def parser() -> argparse.ArgumentParser:
     backtest_p.add_argument("--output", type=Path, required=True)
     backtest_p.add_argument("--cost-bps", type=float, default=13)
     backtest_p.add_argument("--max-rules", type=int, default=500)
+    screen_p = commands.add_parser("universe-screen")
+    screen_p.add_argument("--candles", type=Path, required=True)
+    screen_p.add_argument("--output", type=Path, required=True)
+    screen_p.add_argument("--cost-bps", type=float, default=13)
+    screen_p.add_argument("--max-rules", type=int, default=500)
+    screen_p.add_argument("--limit", type=int, default=50)
     catalogue_p = commands.add_parser("catalogue-loop")
     catalogue_p.add_argument("--binary", type=Path, required=True)
     catalogue_p.add_argument("--catalogue", type=Path, required=True)
@@ -307,6 +313,10 @@ def main() -> None:
         )
     elif args.command == "backtest-loop":
         result = walk_forward(load(args.candles), args.cost_bps, args.max_rules)
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(result, indent=2) + "\n")
+    elif args.command == "universe-screen":
+        result = screen_universe(load(args.candles), args.cost_bps, args.max_rules, args.limit)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(result, indent=2) + "\n")
     elif args.command == "derivatives-loop":

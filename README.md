@@ -97,6 +97,9 @@ scarlett-research candles-archive --market um_futures \
   --universe data/binance-futures-universe.json --interval 4h \
   --start 2022-01-01 --end 2024-12-31 --output data/universe-4h.json
 
+scarlett-research universe-screen --candles data/universe-4h.json \
+  --output data/shortlist.json --limit 50 --cost-bps 13
+
 scarlett-research futures-metrics-archive \
   --universe data/shortlist.json --start 2025-01-01 \
   --output data/shortlist-metrics.json

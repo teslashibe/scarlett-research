@@ -192,3 +192,79 @@ def walk_forward(
         if any(x["decision"] == "forward_candidate" for x in selected)
         else "no_confirmed_public_candle_edge",
     }
+
+
+def _screen_symbol(args: tuple[str, list[dict[str, Any]], float, int]) -> dict[str, Any]:
+    symbol, candles, cost_bps, max_rules = args
+    split = math.floor(len(candles) * 0.6)
+    development, validation = candles[:split], candles[split:]
+    ranked = sorted(
+        (backtest(development, rule, cost_bps) for rule in rules(max_rules)),
+        key=lambda row: (row["trades"] >= 20, row["meanReturn"] or -99),
+        reverse=True,
+    )
+    candidates = []
+    for row in ranked[:10]:
+        valid = backtest(validation, Rule(**row["rule"]), cost_bps)
+        if (
+            row["trades"] >= 20
+            and valid["trades"] >= 10
+            and (row["meanReturn"] or 0) > 0
+            and (valid["meanReturn"] or 0) > 0
+        ):
+            score = (
+                min(row["meanReturn"], valid["meanReturn"])
+                * math.sqrt(valid["trades"])
+                / (1 + valid["maxDrawdown"])
+            )
+            candidates.append({"development": row, "validation": valid, "selectionScore": score})
+    return {
+        "symbol": symbol,
+        "bars": len(candles),
+        "candidates": candidates,
+        "bestScore": max((row["selectionScore"] for row in candidates), default=None),
+    }
+
+
+def screen_universe(
+    bundle: dict[str, Any], cost_bps: float = 13, max_rules: int = 500, limit: int = 50
+) -> dict[str, Any]:
+    """Rank asset-family cells using selection-only history and leave later data untouched."""
+    if limit < 1:
+        raise ValueError("limit must be positive")
+    jobs = [
+        (symbol, candles, cost_bps, max_rules)
+        for symbol, candles in bundle["series"].items()
+        if len(candles) >= 300
+    ]
+    with ProcessPoolExecutor(max_workers=min(8, len(jobs))) as pool:
+        folds = list(pool.map(_screen_symbol, jobs))
+    eligible = sorted(
+        (fold for fold in folds if fold["bestScore"] is not None),
+        key=lambda row: row["bestScore"],
+        reverse=True,
+    )
+    selected = eligible[:limit]
+    protocol = {
+        "purpose": "asset_family_prioritization_only",
+        "selectionDataOnly": True,
+        "confirmationRead": False,
+        "split": [0.6, 0.4],
+        "costBps": cost_bps,
+        "maxRulesPerAsset": max_rules,
+        "minimumBars": 300,
+        "shortlistLimit": limit,
+        "fills": "next_bar_open",
+        "nonOverlapping": True,
+    }
+    return {
+        "protocol": protocol,
+        "inputAssets": len(bundle["series"]),
+        "eligibleAssets": len(folds),
+        "assetsWithCandidates": len(eligible),
+        "count": len(selected),
+        "symbols": [row["symbol"] for row in selected],
+        "ranking": selected,
+        "folds": folds,
+        "conclusion": "shortlist_for_independent_research",
+    }
