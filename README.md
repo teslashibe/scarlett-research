@@ -28,6 +28,13 @@ scarlett-research select-forward --campaign runs/catalogue.json \
 # Open the frozen final partition once, after the family has been selected
 scarlett-research confirm-selection --binary .local/taseries --candles data/binance-4h.json \
   --selection runs/forward-batch.json --output runs/confirmation.json
+# Search event-trigger plus regime-filter recipes while the final partition stays closed
+scarlett-research composite-loop --binary .local/taseries --candles data/binance-4h.json \
+  --campaign runs/catalogue.json --output runs/composites.json
+# Stress a frozen confirmation result with dependence-preserving Monte Carlo paths
+scarlett-research monte-carlo --confirmation runs/confirmation.json \
+  --output runs/monte-carlo.json --simulations 10000 --cost-shock-bps 25 \
+  --allocation-fraction 0.10
 
 # Deeper spot history from Binance's public monthly archive
 scarlett-research candles-archive --symbol BTCUSDT --symbol ETHUSDT --interval 1h \
@@ -65,6 +72,8 @@ confirmation window or launches a live strategy.
 - `catalogue-loop` audits every registered TA function and screens causal outputs without reading confirmation data
 - `select-forward` applies conservative ranking and asset, function, and category caps before paper promotion
 - `confirm-selection` evaluates a frozen family once with after-cost stress and Holm correction
+- `composite-loop` screens deployable two-indicator recipes and retains every rejected trial
+- `monte-carlo` runs deterministic block-bootstrap cost and drawdown stress on frozen outcomes
 
 See [methodology](docs/methodology.md) for evidence limits and
 [agent workflow](docs/agent-workflow.md) for using the included skill.

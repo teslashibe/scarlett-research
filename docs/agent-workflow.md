@@ -20,3 +20,13 @@ confirmed edges. GPU forecasts and other signals that cannot be historically rep
 only after their publication timestamp and must be stored with the decision snapshot. The
 agent may propose another version after a failure, but it may not rewrite old evidence or
 reuse an opened confirmation window as if it were fresh.
+
+Monte Carlo is a robustness layer after a family is frozen. The workbench uses circular
+moving blocks so clustered wins and losses are not treated as independent, then applies a
+random adverse cost shock and reports return, terminal wealth, drawdown, loss, and ruin
+distributions. Account drawdown uses an explicit per-trade allocation fraction; the default
+is 10% notional rather than silently assuming every signal receives the whole account. Its
+seed, path count, block rule, cost distribution, allocation, and gates are recorded.
+It cannot manufacture new observations, repair a failed statistical test, or prove
+causality. Portfolio simulation requires timestamp-aligned positions; summing unrelated
+standalone strategy paths is not a portfolio backtest.

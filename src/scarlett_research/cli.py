@@ -10,9 +10,11 @@ from pathlib import Path
 from .backtest import walk_forward
 from .catalogue import confirm_selection, run_catalogue_campaign
 from .client import ScarlettClient
+from .composites import run_composite_campaign
 from .demo import write_demo
 from .evaluation import Candidate, dataset_summary, metrics_dict, score
 from .market_data import BinanceArchiveConnector, HyperliquidConnector, fetch_bundle
+from .monte_carlo import run_monte_carlo
 from .search import run_search
 from .steering import select_diverse
 from .sync import discover, sync
@@ -114,6 +116,23 @@ def parser() -> argparse.ArgumentParser:
     confirm_p.add_argument("--output", type=Path, required=True)
     confirm_p.add_argument("--cost-bps", type=float, default=25)
     confirm_p.add_argument("--stress-cost-bps", type=float, default=50)
+    composite_p = commands.add_parser("composite-loop")
+    composite_p.add_argument("--binary", type=Path, required=True)
+    composite_p.add_argument("--candles", type=Path, required=True)
+    composite_p.add_argument("--campaign", type=Path, required=True)
+    composite_p.add_argument("--output", type=Path, required=True)
+    composite_p.add_argument("--cost-bps", type=float, default=25)
+    composite_p.add_argument("--source-limit-per-symbol", type=int, default=20)
+    composite_p.add_argument("--selection-limit", type=int, default=24)
+    monte_p = commands.add_parser("monte-carlo")
+    monte_p.add_argument("--confirmation", type=Path, required=True)
+    monte_p.add_argument("--output", type=Path, required=True)
+    monte_p.add_argument("--simulations", type=int, default=10_000)
+    monte_p.add_argument("--block-length", type=int)
+    monte_p.add_argument("--cost-shock-bps", type=float, default=25)
+    monte_p.add_argument("--allocation-fraction", type=float, default=0.10)
+    monte_p.add_argument("--ruin-drawdown", type=float, default=0.20)
+    monte_p.add_argument("--seed", type=int, default=20260920)
     return root
 
 
@@ -206,6 +225,43 @@ def main() -> None:
             "tested": len(result["results"]),
             "supported": result["supported"],
             "conclusion": result["conclusion"],
+        }
+    elif args.command == "composite-loop":
+        result = run_composite_campaign(
+            args.binary,
+            load(args.candles),
+            load(args.campaign),
+            args.cost_bps,
+            args.source_limit_per_symbol,
+            args.selection_limit,
+        )
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(result, indent=2) + "\n")
+        result = {
+            "output": str(args.output),
+            "evaluated": result["evaluated"],
+            "survivors": result["survivors"],
+            "selected": len(result["selected"]),
+            "coverage": result["coverage"],
+            "confirmationRead": result["protocol"]["confirmationRead"],
+        }
+    elif args.command == "monte-carlo":
+        result = run_monte_carlo(
+            load(args.confirmation),
+            simulations=args.simulations,
+            block_length=args.block_length,
+            cost_shock_bps=args.cost_shock_bps,
+            allocation_fraction=args.allocation_fraction,
+            ruin_drawdown=args.ruin_drawdown,
+            seed=args.seed,
+        )
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(result, indent=2) + "\n")
+        result = {
+            "output": str(args.output),
+            "tested": len(result["results"]),
+            "passing": result["passing"],
+            "simulationsPerCandidate": result["protocol"]["simulations"],
         }
     elif args.command == "ta":
         source = load(args.candles)

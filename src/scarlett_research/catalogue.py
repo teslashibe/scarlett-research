@@ -188,6 +188,12 @@ def signal_backtest(
 def trade_returns(
     candles: list[dict[str, Any]], signal: list[int], hold: int, cost_bps: float
 ) -> list[float]:
+    return [row["return"] for row in trade_outcomes(candles, signal, hold, cost_bps)]
+
+
+def trade_outcomes(
+    candles: list[dict[str, Any]], signal: list[int], hold: int, cost_bps: float
+) -> list[dict[str, Any]]:
     returns = []
     index = 0
     while index + hold + 1 < len(candles):
@@ -197,7 +203,16 @@ def trade_returns(
             continue
         entry_index, exit_index = index + 1, index + 1 + hold
         entry, exit_price = float(candles[entry_index]["open"]), float(candles[exit_index]["open"])
-        returns.append(side * (exit_price / entry - 1) - cost_bps / 10_000)
+        returns.append(
+            {
+                "entryIndex": entry_index,
+                "exitIndex": exit_index,
+                "entryTime": candles[entry_index].get("time"),
+                "exitTime": candles[exit_index].get("time"),
+                "side": side,
+                "return": side * (exit_price / entry - 1) - cost_bps / 10_000,
+            }
+        )
         index = exit_index
     return returns
 
@@ -255,7 +270,8 @@ def confirm_selection(
         confirmation_values = values[start:]
         rule = SignalRule(**candidate["rule"])
         base_signal = signals(confirmation_values, rule)
-        returns = trade_returns(confirmation_candles, base_signal, rule.hold, cost_bps)
+        outcomes = trade_outcomes(confirmation_candles, base_signal, rule.hold, cost_bps)
+        returns = [row["return"] for row in outcomes]
         stress_returns = trade_returns(
             confirmation_candles, base_signal, rule.hold, stress_cost_bps
         )
@@ -284,6 +300,7 @@ def confirm_selection(
                 "winRate": sum(value > 0 for value in returns) / len(returns) if returns else None,
                 "stressMeanReturn": stress_mean,
                 "rawPValue": sign_flip_p_value(returns, seed),
+                "outcomes": outcomes,
             }
         )
     adjusted = holm_adjust([row["rawPValue"] for row in results])
