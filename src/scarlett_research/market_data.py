@@ -125,6 +125,9 @@ class BinanceArchiveConnector:
             with archive.open(archive.namelist()[0]) as source:
                 reader = csv.reader(io.TextIOWrapper(source))
                 for row in reader:
+                    if not _is_archive_data_row(row):
+                        # USD-M archives include a header row; spot archives do not.
+                        continue
                     raw_open = int(row[0])
                     raw_close = int(row[6])
                     divisor = 1_000_000 if raw_open > 10**14 else 1_000
@@ -157,6 +160,10 @@ class BinanceArchiveConnector:
 
 def _next_month(value: dt.datetime) -> dt.datetime:
     return dt.datetime(value.year + (value.month == 12), value.month % 12 + 1, 1, tzinfo=dt.UTC)
+
+
+def _is_archive_data_row(row: list[str]) -> bool:
+    return bool(row and row[0].isdigit())
 
 
 def fetch_bundle(

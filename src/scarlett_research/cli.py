@@ -8,7 +8,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from .backtest import walk_forward
-from .catalogue import run_catalogue_campaign
+from .catalogue import confirm_selection, run_catalogue_campaign
 from .client import ScarlettClient
 from .demo import write_demo
 from .evaluation import Candidate, dataset_summary, metrics_dict, score
@@ -107,6 +107,13 @@ def parser() -> argparse.ArgumentParser:
     select_p.add_argument("--campaign", type=Path, required=True)
     select_p.add_argument("--output", type=Path, required=True)
     select_p.add_argument("--limit", type=int, default=20)
+    confirm_p = commands.add_parser("confirm-selection")
+    confirm_p.add_argument("--binary", type=Path, required=True)
+    confirm_p.add_argument("--candles", type=Path, required=True)
+    confirm_p.add_argument("--selection", type=Path, required=True)
+    confirm_p.add_argument("--output", type=Path, required=True)
+    confirm_p.add_argument("--cost-bps", type=float, default=25)
+    confirm_p.add_argument("--stress-cost-bps", type=float, default=50)
     return root
 
 
@@ -183,6 +190,22 @@ def main() -> None:
             "selected": len(result["selected"]),
             "coverage": result["coverage"],
             "confirmationRead": result["protocol"]["confirmationRead"],
+        }
+    elif args.command == "confirm-selection":
+        result = confirm_selection(
+            args.binary,
+            load(args.candles),
+            load(args.selection),
+            args.cost_bps,
+            args.stress_cost_bps,
+        )
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(result, indent=2) + "\n")
+        result = {
+            "output": str(args.output),
+            "tested": len(result["results"]),
+            "supported": result["supported"],
+            "conclusion": result["conclusion"],
         }
     elif args.command == "ta":
         source = load(args.candles)

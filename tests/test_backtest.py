@@ -1,7 +1,11 @@
 import datetime as dt
 
 from scarlett_research.backtest import Rule, backtest, walk_forward
-from scarlett_research.market_data import BinanceArchiveConnector, _next_month
+from scarlett_research.market_data import (
+    BinanceArchiveConnector,
+    _is_archive_data_row,
+    _next_month,
+)
 
 
 def candles(count: int, drift: float = 0.001):
@@ -53,3 +57,8 @@ def test_archive_market_selection():
     assert "/spot/" in spot.base_url
     assert futures.name == "binance_um_futures_archive"
     assert "/futures/um/" in futures.base_url
+
+
+def test_futures_archive_header_is_not_a_timestamp():
+    assert not _is_archive_data_row(["open_time", "open", "high"])
+    assert _is_archive_data_row(["1577836800000", "1", "2"])

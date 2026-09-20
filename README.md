@@ -25,6 +25,9 @@ scarlett-research catalogue-loop --binary .local/taseries --catalogue data/ta-ca
   --candles data/binance-4h.json --output runs/catalogue.json --cost-bps 25
 scarlett-research select-forward --campaign runs/catalogue.json \
   --output runs/forward-batch.json --limit 20
+# Open the frozen final partition once, after the family has been selected
+scarlett-research confirm-selection --binary .local/taseries --candles data/binance-4h.json \
+  --selection runs/forward-batch.json --output runs/confirmation.json
 
 # Deeper spot history from Binance's public monthly archive
 scarlett-research candles-archive --symbol BTCUSDT --symbol ETHUSDT --interval 1h \
@@ -61,6 +64,7 @@ confirmation window or launches a live strategy.
 - `backtest-loop` searches bounded indicator rules using next-bar fills and a 60/20/20 walk-forward protocol
 - `catalogue-loop` audits every registered TA function and screens causal outputs without reading confirmation data
 - `select-forward` applies conservative ranking and asset, function, and category caps before paper promotion
+- `confirm-selection` evaluates a frozen family once with after-cost stress and Holm correction
 
 See [methodology](docs/methodology.md) for evidence limits and
 [agent workflow](docs/agent-workflow.md) for using the included skill.

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
+import random
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -168,17 +170,7 @@ def signal_backtest(
     cost_bps: float,
 ) -> dict[str, Any]:
     signal = signals(values, rule)
-    returns = []
-    index = 0
-    while index + rule.hold + 1 < len(candles):
-        side = signal[index]
-        if side == 0:
-            index += 1
-            continue
-        entry_index, exit_index = index + 1, index + 1 + rule.hold
-        entry, exit_price = float(candles[entry_index]["open"]), float(candles[exit_index]["open"])
-        returns.append(side * (exit_price / entry - 1) - cost_bps / 10_000)
-        index = exit_index
+    returns = trade_returns(candles, signal, rule.hold, cost_bps)
     curve = peak = drawdown = 0.0
     for value in returns:
         curve += value
@@ -190,6 +182,140 @@ def signal_backtest(
         "meanReturn": sum(returns) / len(returns) if returns else None,
         "winRate": sum(value > 0 for value in returns) / len(returns) if returns else None,
         "maxDrawdown": drawdown,
+    }
+
+
+def trade_returns(
+    candles: list[dict[str, Any]], signal: list[int], hold: int, cost_bps: float
+) -> list[float]:
+    returns = []
+    index = 0
+    while index + hold + 1 < len(candles):
+        side = signal[index]
+        if side == 0:
+            index += 1
+            continue
+        entry_index, exit_index = index + 1, index + 1 + hold
+        entry, exit_price = float(candles[entry_index]["open"]), float(candles[exit_index]["open"])
+        returns.append(side * (exit_price / entry - 1) - cost_bps / 10_000)
+        index = exit_index
+    return returns
+
+
+def sign_flip_p_value(returns: list[float], seed: int, samples: int = 100_000) -> float:
+    """One-sided randomization p-value for positive mean under a symmetric zero null."""
+    if not returns:
+        return 1.0
+    observed = sum(returns)
+    if len(returns) <= 20:
+        exceed = 0
+        total = 1 << len(returns)
+        for mask in range(total):
+            randomized = sum(value if mask & (1 << i) else -value for i, value in enumerate(returns))
+            exceed += randomized >= observed - 1e-15
+        return exceed / total
+    generator = random.Random(seed)
+    exceed = 1
+    for _ in range(samples):
+        randomized = sum(value if generator.getrandbits(1) else -value for value in returns)
+        exceed += randomized >= observed - 1e-15
+    return exceed / (samples + 1)
+
+
+def holm_adjust(p_values: list[float]) -> list[float]:
+    adjusted = [1.0] * len(p_values)
+    running = 0.0
+    for rank, index in enumerate(sorted(range(len(p_values)), key=p_values.__getitem__)):
+        running = max(running, (len(p_values) - rank) * p_values[index])
+        adjusted[index] = min(1.0, running)
+    return adjusted
+
+
+def confirm_selection(
+    binary: Path,
+    bundle: dict[str, Any],
+    selection: dict[str, Any],
+    cost_bps: float = 25,
+    stress_cost_bps: float = 50,
+) -> dict[str, Any]:
+    """Open the final chronological partition once for an already frozen family."""
+    results = []
+    cache: dict[tuple[str, str], dict[str, Any]] = {}
+    for candidate in selection["selected"]:
+        symbol = candidate["symbol"]
+        candles = bundle["series"][symbol]
+        calculation_key = json.dumps(candidate["calculation"], sort_keys=True)
+        key = (symbol, calculation_key)
+        if key not in cache:
+            cache[key] = evaluate(binary, candles, [candidate["calculation"]])["calculations"][0]
+        output = cache[key]["outputs"][candidate["output"]]
+        values = output.get("integer") if output["type"] == "integer_series" else output.get("real")
+        start = int(len(candles) * 0.8)
+        confirmation_candles = candles[start:]
+        confirmation_values = values[start:]
+        rule = SignalRule(**candidate["rule"])
+        base_signal = signals(confirmation_values, rule)
+        returns = trade_returns(confirmation_candles, base_signal, rule.hold, cost_bps)
+        stress_returns = trade_returns(
+            confirmation_candles, base_signal, rule.hold, stress_cost_bps
+        )
+        seed_material = json.dumps(
+            {
+                "symbol": symbol,
+                "function": candidate["function"],
+                "output": candidate["output"],
+                "rule": candidate["rule"],
+            },
+            sort_keys=True,
+        ).encode()
+        seed = int.from_bytes(hashlib.sha256(seed_material).digest()[:8], "big")
+        mean = sum(returns) / len(returns) if returns else None
+        stress_mean = sum(stress_returns) / len(stress_returns) if stress_returns else None
+        results.append(
+            {
+                "symbol": symbol,
+                "function": candidate["function"],
+                "category": candidate["category"],
+                "output": candidate["output"],
+                "rule": candidate["rule"],
+                "trades": len(returns),
+                "totalReturn": sum(returns),
+                "meanReturn": mean,
+                "winRate": sum(value > 0 for value in returns) / len(returns) if returns else None,
+                "stressMeanReturn": stress_mean,
+                "rawPValue": sign_flip_p_value(returns, seed),
+            }
+        )
+    adjusted = holm_adjust([row["rawPValue"] for row in results])
+    for row, p_value in zip(results, adjusted, strict=True):
+        row["holmAdjustedPValue"] = p_value
+        row["supportedUnderTestConditions"] = bool(
+            row["trades"] >= 10
+            and (row["meanReturn"] or 0) > 0
+            and (row["stressMeanReturn"] or 0) > 0
+            and p_value <= 0.05
+        )
+    return {
+        "protocol": {
+            "partition": "final_20_percent_chronological",
+            "opened": True,
+            "familySize": len(results),
+            "costBps": cost_bps,
+            "stressCostBps": stress_cost_bps,
+            "minimumTrades": 10,
+            "test": "one_sided_sign_flip_mean_greater_than_zero",
+            "testAssumption": "trade returns are symmetric under the zero-mean null",
+            "multipleComparisonCorrection": "Holm family-wise alpha 0.05",
+            "fills": "next_bar_open",
+            "nonOverlapping": True,
+        },
+        "results": results,
+        "supported": sum(row["supportedUnderTestConditions"] for row in results),
+        "conclusion": (
+            "supported_under_test_conditions"
+            if any(row["supportedUnderTestConditions"] for row in results)
+            else "confirmation_failed"
+        ),
     }
 
 
