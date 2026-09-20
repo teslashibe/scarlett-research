@@ -79,6 +79,8 @@ See [methodology](docs/methodology.md) for evidence limits and
 [agent workflow](docs/agent-workflow.md) for using the included skill.
 The reusable [edge-discovery recipe](examples/edge-discovery-recipe.json) and
 [daily loop](docs/edge-discovery-loop.md) define the recurring API-driven workflow.
+Repository agents must also follow the root [agent contract](AGENTS.md), which covers
+API-key handling, private results, large deterministic searches, and confirmation gates.
 
 ## Snapshot format
 
