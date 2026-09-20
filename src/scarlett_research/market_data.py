@@ -22,6 +22,15 @@ class CandleConnector(Protocol):
     ) -> list[dict[str, Any]]: ...
 
 
+def normalize_market_symbol(symbol: str, source: str) -> str:
+    """Map provider instruments to Scarlett's base-asset forecast market."""
+    if source.startswith("binance_"):
+        for quote in ("USDT", "USDC", "USD"):
+            if symbol.endswith(quote) and len(symbol) > len(quote):
+                return symbol[: -len(quote)]
+    return symbol
+
+
 @dataclass
 class HyperliquidConnector:
     """Public, keyless Hyperliquid candle-snapshot connector."""

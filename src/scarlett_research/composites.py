@@ -119,6 +119,7 @@ def run_composite_campaign(
                 )
                 trial = {
                     "symbol": symbol,
+                    "marketSymbol": trigger.get("marketSymbol", symbol),
                     "side": trigger_rule.side,
                     "trigger": trigger,
                     "regime": regime,

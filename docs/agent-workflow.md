@@ -30,3 +30,9 @@ seed, path count, block rule, cost distribution, allocation, and gates are recor
 It cannot manufacture new observations, repair a failed statistical test, or prove
 causality. Portfolio simulation requires timestamp-aligned positions; summing unrelated
 standalone strategy paths is not a portfolio backtest.
+
+Market-data instruments and Scarlett forecast markets are separate identifiers. Binance
+`BTCUSDT`, for example, is recorded as the source instrument while deployable recipes use
+the normalized Scarlett market `BTC`. Never copy an exchange pair into a strategy universe
+without applying and recording the connector's symbol mapping; a syntactically valid but
+unreachable market can otherwise launch without ever receiving a decision event.

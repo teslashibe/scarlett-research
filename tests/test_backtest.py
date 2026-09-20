@@ -5,6 +5,7 @@ from scarlett_research.market_data import (
     BinanceArchiveConnector,
     _is_archive_data_row,
     _next_month,
+    normalize_market_symbol,
 )
 
 
@@ -62,3 +63,8 @@ def test_archive_market_selection():
 def test_futures_archive_header_is_not_a_timestamp():
     assert not _is_archive_data_row(["open_time", "open", "high"])
     assert _is_archive_data_row(["1577836800000", "1", "2"])
+
+
+def test_binance_instrument_is_mapped_to_forecast_market():
+    assert normalize_market_symbol("BTCUSDT", "binance_spot_archive") == "BTC"
+    assert normalize_market_symbol("BTC", "hyperliquid") == "BTC"

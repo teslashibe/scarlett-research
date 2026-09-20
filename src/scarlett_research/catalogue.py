@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .market_data import normalize_market_symbol
+
 RESEARCH_CATEGORIES = {
     "Cycle Indicators",
     "Momentum Indicators",
@@ -422,6 +424,9 @@ def run_catalogue_campaign(
                     candidate.update(
                         {
                             "symbol": symbol,
+                            "marketSymbol": normalize_market_symbol(
+                                symbol, bundle.get("metadata", {}).get("source", "")
+                            ),
                             "function": definition["name"],
                             "category": definition["category"],
                             "calculation": calculation(definition, "feature"),
