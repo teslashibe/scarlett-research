@@ -8,6 +8,7 @@ from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from .catalogue import holm_adjust, sign_flip_p_value
 from .technical_analysis import indicator
 
 
@@ -59,7 +60,9 @@ def _signal(closes: list[float], rule: Rule) -> list[int]:
     return output
 
 
-def backtest(candles: list[dict[str, Any]], rule: Rule, cost_bps: float = 13) -> dict[str, Any]:
+def backtest_outcomes(
+    candles: list[dict[str, Any]], rule: Rule, cost_bps: float = 13
+) -> list[dict[str, Any]]:
     """Signals use bar close; fills use the next bar open; positions never overlap."""
     closes = [float(row["close"]) for row in candles]
     signals = _signal(closes, rule)
@@ -84,6 +87,11 @@ def backtest(candles: list[dict[str, Any]], rule: Rule, cost_bps: float = 13) ->
             }
         )
         index = exit_index
+    return trades
+
+
+def backtest(candles: list[dict[str, Any]], rule: Rule, cost_bps: float = 13) -> dict[str, Any]:
+    trades = backtest_outcomes(candles, rule, cost_bps)
     returns = [row["netReturn"] for row in trades]
     curve = peak = drawdown = 0.0
     for value in returns:
@@ -97,6 +105,104 @@ def backtest(candles: list[dict[str, Any]], rule: Rule, cost_bps: float = 13) ->
         "meanReturn": sum(returns) / len(returns) if returns else None,
         "winRate": sum(value > 0 for value in returns) / len(returns) if returns else None,
         "maxDrawdown": drawdown,
+    }
+
+
+def freeze_universe_selection(
+    screen: dict[str, Any], excluded: set[str], limit: int = 24
+) -> dict[str, Any]:
+    selected = []
+    for asset in screen["ranking"]:
+        if asset["symbol"] in excluded or not asset["candidates"]:
+            continue
+        candidate = max(asset["candidates"], key=lambda row: row["selectionScore"])
+        selected.append(
+            {
+                "symbol": asset["symbol"],
+                "rule": candidate["development"]["rule"],
+                "development": candidate["development"],
+                "validation": candidate["validation"],
+                "selectionScore": candidate["selectionScore"],
+            }
+        )
+        if len(selected) == limit:
+            break
+    return {
+        "protocol": {
+            "family": "preperiod_asset_specific_price_rules",
+            "selectionDataOnly": True,
+            "confirmationRead": False,
+            "oneRulePerAsset": True,
+            "excludedSymbols": sorted(excluded),
+            "limit": limit,
+        },
+        "count": len(selected),
+        "symbols": [row["symbol"] for row in selected],
+        "selected": selected,
+    }
+
+
+def confirm_universe_selection(
+    bundle: dict[str, Any],
+    selection: dict[str, Any],
+    cost_bps: float = 13,
+    stress_cost_bps: float = 25,
+) -> dict[str, Any]:
+    results = []
+    for candidate in selection["selected"]:
+        symbol = candidate["symbol"]
+        candles = bundle["series"].get(symbol, [])
+        rule = Rule(**candidate["rule"])
+        outcomes = backtest_outcomes(candles, rule, cost_bps)
+        stress_outcomes = backtest_outcomes(candles, rule, stress_cost_bps)
+        returns = [row["netReturn"] for row in outcomes]
+        stress_returns = [row["netReturn"] for row in stress_outcomes]
+        metrics = backtest(candles, rule, cost_bps)
+        recipe_id = hashlib.sha256(
+            json.dumps({"symbol": symbol, "rule": candidate["rule"]}, sort_keys=True).encode()
+        ).hexdigest()
+        results.append(
+            {
+                "recipeId": recipe_id,
+                "symbol": symbol,
+                "rule": candidate["rule"],
+                **{
+                    key: metrics[key]
+                    for key in ("trades", "totalReturn", "meanReturn", "winRate", "maxDrawdown")
+                },
+                "stressMeanReturn": (
+                    sum(stress_returns) / len(stress_returns) if stress_returns else None
+                ),
+                "rawPValue": sign_flip_p_value(returns, int(recipe_id[:16], 16), samples=100_000),
+                "outcomes": outcomes,
+            }
+        )
+    adjusted = holm_adjust([row["rawPValue"] for row in results])
+    for row, adjusted_p in zip(results, adjusted, strict=True):
+        row["holmAdjustedPValue"] = adjusted_p
+        row["supportedUnderTestConditions"] = bool(
+            row["trades"] >= 20
+            and (row["meanReturn"] or 0) > 0
+            and (row["stressMeanReturn"] or 0) > 0
+            and adjusted_p <= 0.05
+        )
+    supported = sum(row["supportedUnderTestConditions"] for row in results)
+    return {
+        "protocol": {
+            "family": selection["protocol"]["family"],
+            "partition": "full_later_period_independent_time_transfer",
+            "opened": True,
+            "familySize": len(results),
+            "costBps": cost_bps,
+            "stressCostBps": stress_cost_bps,
+            "minimumTrades": 20,
+            "multipleComparisonCorrection": "Holm family-wise alpha 0.05",
+            "fills": "next_bar_open",
+            "nonOverlapping": True,
+        },
+        "results": results,
+        "supported": supported,
+        "conclusion": ("supported_under_test_conditions" if supported else "confirmation_failed"),
     }
 
 

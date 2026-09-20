@@ -7,7 +7,12 @@ import os
 from dataclasses import asdict
 from pathlib import Path
 
-from .backtest import screen_universe, walk_forward
+from .backtest import (
+    confirm_universe_selection,
+    freeze_universe_selection,
+    screen_universe,
+    walk_forward,
+)
 from .carry import confirm_carry_selection, run_carry_campaign
 from .catalogue import confirm_selection, run_catalogue_campaign
 from .client import ScarlettClient
@@ -151,6 +156,17 @@ def parser() -> argparse.ArgumentParser:
     screen_p.add_argument("--cost-bps", type=float, default=13)
     screen_p.add_argument("--max-rules", type=int, default=500)
     screen_p.add_argument("--limit", type=int, default=50)
+    freeze_screen_p = commands.add_parser("freeze-universe")
+    freeze_screen_p.add_argument("--screen", type=Path, required=True)
+    freeze_screen_p.add_argument("--exclude", type=Path, action="append", default=[])
+    freeze_screen_p.add_argument("--limit", type=int, default=24)
+    freeze_screen_p.add_argument("--output", type=Path, required=True)
+    confirm_screen_p = commands.add_parser("confirm-universe")
+    confirm_screen_p.add_argument("--candles", type=Path, required=True)
+    confirm_screen_p.add_argument("--selection", type=Path, required=True)
+    confirm_screen_p.add_argument("--output", type=Path, required=True)
+    confirm_screen_p.add_argument("--cost-bps", type=float, default=13)
+    confirm_screen_p.add_argument("--stress-cost-bps", type=float, default=25)
     catalogue_p = commands.add_parser("catalogue-loop")
     catalogue_p.add_argument("--binary", type=Path, required=True)
     catalogue_p.add_argument("--catalogue", type=Path, required=True)
@@ -341,6 +357,38 @@ def main() -> None:
         result = screen_universe(load(args.candles), args.cost_bps, args.max_rules, args.limit)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(result, indent=2) + "\n")
+        result = {
+            "output": str(args.output),
+            "inputAssets": result["inputAssets"],
+            "eligibleAssets": result["eligibleAssets"],
+            "assetsWithCandidates": result["assetsWithCandidates"],
+            "selected": result["count"],
+            "confirmationRead": result["protocol"]["confirmationRead"],
+        }
+    elif args.command == "freeze-universe":
+        excluded = {symbol for path in args.exclude for symbol in load(path).get("symbols", [])}
+        result = freeze_universe_selection(load(args.screen), excluded, args.limit)
+        write_json(args.output, result)
+        result = {
+            "output": str(args.output),
+            "selected": result["count"],
+            "excluded": len(excluded),
+            "confirmationRead": result["protocol"]["confirmationRead"],
+        }
+    elif args.command == "confirm-universe":
+        result = confirm_universe_selection(
+            load(args.candles),
+            load(args.selection),
+            args.cost_bps,
+            args.stress_cost_bps,
+        )
+        write_json(args.output, result)
+        result = {
+            "output": str(args.output),
+            "tested": len(result["results"]),
+            "supported": result["supported"],
+            "conclusion": result["conclusion"],
+        }
     elif args.command == "derivatives-loop":
         candles, metrics = load(args.candles), load(args.metrics)
         if args.symbol:

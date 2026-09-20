@@ -1,6 +1,12 @@
 import datetime as dt
 
-from scarlett_research.backtest import Rule, backtest, screen_universe, walk_forward
+from scarlett_research.backtest import (
+    Rule,
+    backtest,
+    freeze_universe_selection,
+    screen_universe,
+    walk_forward,
+)
 from scarlett_research.market_data import (
     BinanceArchiveConnector,
     _is_archive_data_row,
@@ -59,6 +65,23 @@ def test_universe_screen_never_reads_or_emits_confirmation():
         for fold in result["folds"]
         for candidate in fold["candidates"]
     )
+
+
+def test_freeze_universe_excludes_consumed_assets_and_selects_one_rule_each():
+    candidate = {
+        "development": {"rule": {"kind": "breakout", "fast": 2, "slow": 12, "hold": 4}},
+        "validation": {"trades": 20},
+        "selectionScore": 1.0,
+    }
+    screen = {
+        "ranking": [
+            {"symbol": "USEDUSDT", "candidates": [candidate]},
+            {"symbol": "FRESHUSDT", "candidates": [candidate]},
+        ]
+    }
+    frozen = freeze_universe_selection(screen, {"USEDUSDT"}, limit=2)
+    assert frozen["symbols"] == ["FRESHUSDT"]
+    assert frozen["protocol"]["confirmationRead"] is False
 
 
 def test_archive_month_rollover():

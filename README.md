@@ -113,6 +113,13 @@ scarlett-research candles-archive --market um_futures \
 scarlett-research universe-screen --candles data/universe-4h.json \
   --output data/shortlist.json --limit 50 --cost-bps 13
 
+scarlett-research freeze-universe --screen data/shortlist.json \
+  --exclude data/already-consumed.json --limit 24 --output runs/frozen-transfer.json
+
+scarlett-research confirm-universe --candles data/later-period-4h.json \
+  --selection runs/frozen-transfer.json --cost-bps 13 --stress-cost-bps 25 \
+  --output runs/universe-confirmation.json
+
 scarlett-research futures-metrics-archive \
   --universe data/shortlist.json --start 2025-01-01 \
   --output data/shortlist-metrics.json
