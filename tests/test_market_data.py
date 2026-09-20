@@ -1,4 +1,8 @@
-from scarlett_research.market_data import _archive_prefixes, _metrics_record
+from scarlett_research.market_data import (
+    _archive_prefixes,
+    _metrics_record,
+    _valid_contract_base,
+)
 
 
 def test_archive_prefix_listing_extracts_symbols_and_continuation_token():
@@ -8,6 +12,11 @@ def test_archive_prefix_listing_extracts_symbols_and_continuation_token():
       <CommonPrefixes><Prefix>data/futures/um/monthly/klines/BTCUSDT/</Prefix></CommonPrefixes>
     </ListBucketResult>"""
     assert _archive_prefixes(payload) == (["data/futures/um/monthly/klines/BTCUSDT/"], "next/page")
+
+
+def test_universe_contract_base_must_be_ascii_alphanumeric():
+    assert _valid_contract_base("1000PEPE")
+    assert not _valid_contract_base("币安人生")
 
 
 def test_metrics_record_normalizes_public_archive_fields():

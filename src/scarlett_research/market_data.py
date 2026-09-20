@@ -4,6 +4,7 @@ import csv
 import datetime as dt
 import io
 import json
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -57,6 +58,10 @@ def binance_futures_universe(quote: str = "USDT") -> list[str]:
     return sorted(symbols)
 
 
+def _valid_contract_base(symbol: str) -> bool:
+    return re.fullmatch(r"[A-Z0-9]+", symbol) is not None
+
+
 def ranked_crypto_futures_universe(
     archive_symbols: list[str], limit: int = 200, pages: int = 2
 ) -> list[dict[str, Any]]:
@@ -83,7 +88,10 @@ def ranked_crypto_futures_universe(
         with urllib.request.urlopen(request, timeout=60) as response:
             rows = json.load(response)
         for row in rows:
-            symbol = str(row["symbol"]).upper() + "USDT"
+            base = str(row["symbol"]).upper()
+            if not _valid_contract_base(base):
+                continue
+            symbol = base + "USDT"
             if symbol not in available or symbol in seen:
                 continue
             seen.add(symbol)
