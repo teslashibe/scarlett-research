@@ -8,11 +8,13 @@ from dataclasses import asdict
 from pathlib import Path
 
 from .backtest import walk_forward
+from .catalogue import run_catalogue_campaign
 from .client import ScarlettClient
 from .demo import write_demo
 from .evaluation import Candidate, dataset_summary, metrics_dict, score
 from .market_data import BinanceArchiveConnector, HyperliquidConnector, fetch_bundle
 from .search import run_search
+from .steering import select_diverse
 from .sync import discover, sync
 from .technical_analysis import analyze, resample
 
@@ -95,6 +97,16 @@ def parser() -> argparse.ArgumentParser:
     backtest_p.add_argument("--output", type=Path, required=True)
     backtest_p.add_argument("--cost-bps", type=float, default=13)
     backtest_p.add_argument("--max-rules", type=int, default=500)
+    catalogue_p = commands.add_parser("catalogue-loop")
+    catalogue_p.add_argument("--binary", type=Path, required=True)
+    catalogue_p.add_argument("--catalogue", type=Path, required=True)
+    catalogue_p.add_argument("--candles", type=Path, required=True)
+    catalogue_p.add_argument("--output", type=Path, required=True)
+    catalogue_p.add_argument("--cost-bps", type=float, default=25)
+    select_p = commands.add_parser("select-forward")
+    select_p.add_argument("--campaign", type=Path, required=True)
+    select_p.add_argument("--output", type=Path, required=True)
+    select_p.add_argument("--limit", type=int, default=20)
     return root
 
 
@@ -142,6 +154,36 @@ def main() -> None:
         result = walk_forward(load(args.candles), args.cost_bps, args.max_rules)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(result, indent=2) + "\n")
+    elif args.command == "catalogue-loop":
+        result = run_catalogue_campaign(
+            args.binary,
+            load(args.catalogue),
+            load(args.candles),
+            args.cost_bps,
+        )
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(result, indent=2) + "\n")
+        audit = result["catalogueAudit"]
+        result = {
+            "output": str(args.output),
+            "tested": audit["tested"],
+            "compatible": audit["compatible"],
+            "incompatible": audit["incompatible"],
+            "candidates": len(result["candidates"]),
+            "confirmationRead": result["protocol"]["confirmationRead"],
+            "conclusion": result["conclusion"],
+        }
+    elif args.command == "select-forward":
+        campaign = load(args.campaign)
+        result = select_diverse(campaign["candidates"], args.limit)
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(result, indent=2) + "\n")
+        result = {
+            "output": str(args.output),
+            "selected": len(result["selected"]),
+            "coverage": result["coverage"],
+            "confirmationRead": result["protocol"]["confirmationRead"],
+        }
     elif args.command == "ta":
         source = load(args.candles)
         candles = source.get("candles", source) if isinstance(source, dict) else source

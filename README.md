@@ -20,6 +20,12 @@ scarlett-research loop --snapshot runs/demo/snapshot.json --output runs/search
 scarlett-research candles-fetch --symbol BTC --symbol ETH --interval 15m --days 52 --output data/hyperliquid.json
 scarlett-research backtest-loop --candles data/hyperliquid.json --output runs/public-candles.json
 
+# Exercise the complete Scarlett TA catalogue, then choose a diversified paper batch
+scarlett-research catalogue-loop --binary .local/taseries --catalogue data/ta-catalogue.json \
+  --candles data/binance-4h.json --output runs/catalogue.json --cost-bps 25
+scarlett-research select-forward --campaign runs/catalogue.json \
+  --output runs/forward-batch.json --limit 20
+
 # Deeper spot history from Binance's public monthly archive
 scarlett-research candles-archive --symbol BTCUSDT --symbol ETHUSDT --interval 1h \
   --start 2020-01-01 --output data/binance-1h.json
@@ -53,6 +59,8 @@ confirmation window or launches a live strategy.
 - `candles-fetch` downloads keyless public Hyperliquid candles into a provenance bundle
 - `candles-archive` downloads multi-year monthly Binance Spot or USD-M futures archives without an API key
 - `backtest-loop` searches bounded indicator rules using next-bar fills and a 60/20/20 walk-forward protocol
+- `catalogue-loop` audits every registered TA function and screens causal outputs without reading confirmation data
+- `select-forward` applies conservative ranking and asset, function, and category caps before paper promotion
 
 See [methodology](docs/methodology.md) for evidence limits and
 [agent workflow](docs/agent-workflow.md) for using the included skill.
