@@ -21,9 +21,11 @@ from .derivatives import (
 from .evaluation import Candidate, dataset_summary, metrics_dict, score
 from .market_data import (
     BinanceArchiveConnector,
+    BinanceFundingArchiveConnector,
     BinanceFuturesMetricsConnector,
     HyperliquidConnector,
     fetch_bundle,
+    fetch_funding_bundle,
     fetch_metrics_bundle,
 )
 from .mass_search import confirm_mass_selection, merge_mass_shards, run_mass_campaign
@@ -112,6 +114,11 @@ def parser() -> argparse.ArgumentParser:
     metrics_p.add_argument("--start", required=True, help="UTC date, for example 2024-01-01")
     metrics_p.add_argument("--end", help="UTC date, defaults to now")
     metrics_p.add_argument("--output", type=Path, required=True)
+    funding_p = commands.add_parser("funding-archive")
+    funding_p.add_argument("--symbol", action="append", required=True)
+    funding_p.add_argument("--start", required=True, help="UTC date, for example 2024-01-01")
+    funding_p.add_argument("--end", help="UTC date, defaults to now")
+    funding_p.add_argument("--output", type=Path, required=True)
     backtest_p = commands.add_parser("backtest-loop")
     backtest_p.add_argument("--candles", type=Path, required=True)
     backtest_p.add_argument("--output", type=Path, required=True)
@@ -175,6 +182,7 @@ def parser() -> argparse.ArgumentParser:
     derivatives_p = commands.add_parser("derivatives-loop")
     derivatives_p.add_argument("--candles", type=Path, required=True)
     derivatives_p.add_argument("--metrics", type=Path, required=True)
+    derivatives_p.add_argument("--funding", type=Path)
     derivatives_p.add_argument("--output", type=Path, required=True)
     derivatives_p.add_argument("--cost-bps", type=float, default=25)
     derivatives_p.add_argument("--max-recipes", type=int, default=250_000)
@@ -186,6 +194,7 @@ def parser() -> argparse.ArgumentParser:
     confirm_derivatives_p = commands.add_parser("confirm-derivatives")
     confirm_derivatives_p.add_argument("--candles", type=Path, required=True)
     confirm_derivatives_p.add_argument("--metrics", type=Path, required=True)
+    confirm_derivatives_p.add_argument("--funding", type=Path)
     confirm_derivatives_p.add_argument("--selection", type=Path, required=True)
     confirm_derivatives_p.add_argument("--output", type=Path, required=True)
     confirm_derivatives_p.add_argument("--cost-bps", type=float, default=25)
@@ -247,6 +256,20 @@ def main() -> None:
             int(end.timestamp() * 1000),
             args.output,
         )
+    elif args.command == "funding-archive":
+        start = dt.datetime.fromisoformat(args.start).replace(tzinfo=dt.UTC)
+        end = (
+            dt.datetime.fromisoformat(args.end).replace(tzinfo=dt.UTC)
+            if args.end
+            else dt.datetime.now(dt.UTC)
+        )
+        result = fetch_funding_bundle(
+            BinanceFundingArchiveConnector(),
+            args.symbol,
+            int(start.timestamp() * 1000),
+            int(end.timestamp() * 1000),
+            args.output,
+        )
     elif args.command == "backtest-loop":
         result = walk_forward(load(args.candles), args.cost_bps, args.max_rules)
         args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -262,8 +285,13 @@ def main() -> None:
             metrics["series"] = {
                 symbol: metrics["series"].get(symbol, []) for symbol in candles["series"]
             }
+        funding = load(args.funding) if args.funding else None
+        if funding is not None and args.symbol:
+            funding["series"] = {
+                symbol: funding["series"].get(symbol, []) for symbol in candles["series"]
+            }
         result = run_derivatives_campaign(
-            candles, metrics, args.cost_bps, args.max_recipes
+            candles, metrics, funding, args.cost_bps, args.max_recipes
         )
         write_json(args.output, result)
         result = {
@@ -287,6 +315,7 @@ def main() -> None:
         result = confirm_derivatives_selection(
             load(args.candles),
             load(args.metrics),
+            load(args.funding) if args.funding else None,
             load(args.selection),
             args.cost_bps,
             args.stress_cost_bps,

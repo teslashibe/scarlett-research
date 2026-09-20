@@ -210,6 +210,57 @@ class BinanceFuturesMetricsConnector:
         return output
 
 
+@dataclass
+class BinanceFundingArchiveConnector:
+    """Public Binance Vision monthly USD-M funding-rate connector."""
+
+    base_url: str = "https://data.binance.vision/data/futures/um/monthly/fundingRate"
+    name: str = "binance_um_funding_rate_archive"
+
+    def funding(self, symbol: str, start_ms: int, end_ms: int) -> list[dict[str, Any]]:
+        start = dt.datetime.fromtimestamp(start_ms / 1000, dt.UTC)
+        end = dt.datetime.fromtimestamp(end_ms / 1000, dt.UTC)
+        month = dt.datetime(start.year, start.month, 1, tzinfo=dt.UTC)
+        output = []
+        while month <= end:
+            label = f"{month.year:04d}-{month.month:02d}"
+            filename = f"{symbol}-fundingRate-{label}.zip"
+            url = f"{self.base_url}/{symbol}/{filename}"
+            archive = None
+            for attempt in range(4):
+                try:
+                    with urllib.request.urlopen(url, timeout=60) as response:
+                        archive = zipfile.ZipFile(io.BytesIO(response.read()))
+                    break
+                except urllib.error.HTTPError as exc:
+                    if exc.code == 404:
+                        break
+                    if attempt == 3:
+                        raise
+                except (urllib.error.URLError, ConnectionError, TimeoutError):
+                    if attempt == 3:
+                        raise
+                time.sleep(0.5 * (2**attempt))
+            if archive is not None:
+                with archive.open(archive.namelist()[0]) as source:
+                    for row in csv.DictReader(io.TextIOWrapper(source)):
+                        raw_time = int(row["calc_time"])
+                        divisor = 1_000_000 if raw_time > 10**14 else 1_000
+                        timestamp = dt.datetime.fromtimestamp(raw_time / divisor, dt.UTC)
+                        timestamp_ms = timestamp.timestamp() * 1000
+                        if start_ms <= timestamp_ms <= end_ms:
+                            output.append(
+                                {
+                                    "time": timestamp.isoformat().replace("+00:00", "Z"),
+                                    "symbol": symbol,
+                                    "intervalHours": int(row["funding_interval_hours"]),
+                                    "fundingRate": float(row["last_funding_rate"]),
+                                }
+                            )
+            month = _next_month(month)
+        return sorted(output, key=lambda row: row["time"])
+
+
 def _metrics_record(row: dict[str, str]) -> dict[str, Any]:
     timestamp = dt.datetime.fromisoformat(row["create_time"]).replace(tzinfo=dt.UTC)
     def optional_float(name: str) -> float | None:
@@ -296,6 +347,33 @@ def fetch_metrics_bundle(
             "endTime": end_ms,
             "retrievedAt": dt.datetime.now(dt.UTC).isoformat(),
             "limits": "Daily archive files; unavailable symbol-days are skipped",
+        },
+        "series": series,
+    }
+    output.write_text(json.dumps(bundle, indent=2) + "\n")
+    return {"output": str(output), "symbols": {key: len(value) for key, value in series.items()}}
+
+
+def fetch_funding_bundle(
+    connector: BinanceFundingArchiveConnector,
+    symbols: list[str],
+    start_ms: int,
+    end_ms: int,
+    output: Path,
+) -> dict[str, Any]:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with ThreadPoolExecutor(max_workers=min(6, len(symbols))) as pool:
+        fetched = pool.map(
+            lambda symbol: (symbol, connector.funding(symbol, start_ms, end_ms)), symbols
+        )
+        series = dict(fetched)
+    bundle = {
+        "metadata": {
+            "source": connector.name,
+            "startTime": start_ms,
+            "endTime": end_ms,
+            "retrievedAt": dt.datetime.now(dt.UTC).isoformat(),
+            "limits": "Monthly archive files; unavailable symbol-months are skipped",
         },
         "series": series,
     }

@@ -40,7 +40,9 @@ def _rolling_mean(values: list[float | None], window: int) -> list[float | None]
 
 
 def feature_series(
-    candles: list[dict[str, Any]], metrics: list[dict[str, Any]]
+    candles: list[dict[str, Any]],
+    metrics: list[dict[str, Any]],
+    funding: list[dict[str, Any]] | None = None,
 ) -> dict[str, list[float | None]]:
     """Align public derivatives metrics to candle-open timestamps without forward filling."""
     by_time = {row["time"]: row for row in metrics}
@@ -65,6 +67,19 @@ def feature_series(
         features[f"{name}_change_1h"] = _change(raw[name], 12)
     features["taker_ratio_mean_1h"] = _rolling_mean(raw["taker_ratio"], 12)
     features["taker_ratio_mean_4h"] = _rolling_mean(raw["taker_ratio"], 48)
+    if funding:
+        ordered = sorted(funding, key=lambda row: row["time"])
+        funding_values: list[float | None] = []
+        cursor = 0
+        latest: float | None = None
+        for candle in candles:
+            while cursor < len(ordered) and ordered[cursor]["time"] <= candle["time"]:
+                latest = float(ordered[cursor]["fundingRate"])
+                cursor += 1
+            funding_values.append(latest)
+        features["funding_rate"] = funding_values
+        features["funding_rate_change_8h"] = _change(funding_values, 96)
+        features["funding_rate_mean_24h"] = _rolling_mean(funding_values, 288)
     return features
 
 
@@ -137,13 +152,15 @@ def _combine(family: str, masks: list[int]) -> int:
 def run_derivatives_campaign(
     candles_bundle: dict[str, Any],
     metrics_bundle: dict[str, Any],
+    funding_bundle: dict[str, Any] | None = None,
     cost_bps: float = 25,
     max_recipes: int = 250_000,
 ) -> dict[str, Any]:
     prepared = {}
     for symbol, candles in candles_bundle["series"].items():
         metrics = metrics_bundle["series"].get(symbol, [])
-        features = feature_series(candles, metrics)
+        funding = funding_bundle["series"].get(symbol, []) if funding_bundle else None
+        features = feature_series(candles, metrics, funding)
         first = int(len(candles) * 0.6)
         sources = _rule_sources(features, first)
         recipes = _recipes(sources)
@@ -286,6 +303,7 @@ def merge_derivatives_campaigns(
 def confirm_derivatives_selection(
     candles_bundle: dict[str, Any],
     metrics_bundle: dict[str, Any],
+    funding_bundle: dict[str, Any] | None,
     selection: dict[str, Any],
     cost_bps: float = 25,
     stress_cost_bps: float = 50,
@@ -296,7 +314,12 @@ def confirm_derivatives_selection(
         symbol = candidate["symbol"]
         candles = candles_bundle["series"][symbol]
         features = cache.setdefault(
-            symbol, feature_series(candles, metrics_bundle["series"].get(symbol, []))
+            symbol,
+            feature_series(
+                candles,
+                metrics_bundle["series"].get(symbol, []),
+                funding_bundle["series"].get(symbol, []) if funding_bundle else None,
+            ),
         )
         masks = [
             _mask(features[source["feature"]], source["operator"], source["threshold"])

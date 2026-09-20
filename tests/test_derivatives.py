@@ -33,6 +33,17 @@ def test_feature_alignment_does_not_forward_fill_missing_metrics():
     assert features["global_ratio"] == [1.0, None]
 
 
+def test_funding_is_only_forward_filled_after_publication():
+    candles = [
+        {"time": "2025-01-01T00:00:00Z"},
+        {"time": "2025-01-01T00:05:00Z"},
+        {"time": "2025-01-01T00:10:00Z"},
+    ]
+    metrics = []
+    funding = [{"time": "2025-01-01T00:05:00Z", "fundingRate": 0.0001}]
+    assert feature_series(candles, metrics, funding)["funding_rate"] == [None, 0.0001, 0.0001]
+
+
 def test_derivatives_merge_uses_all_shard_trials():
     trial = {
         "recipeId": "a",
