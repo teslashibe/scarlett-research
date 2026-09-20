@@ -61,6 +61,18 @@ go build -C kernel -o ../.local/derivatives-kernel ./cmd/derivatives-kernel
 scarlett-research derivatives-loop --candles data/futures-5m.json \
   --metrics data/futures-metrics-5m.json --funding data/funding.json \
   --kernel .local/derivatives-kernel --output runs/derivatives.json
+
+# Search a market-neutral cross-sectional funding-carry family
+scarlett-research carry-loop --candles data/futures-5m.json \
+  --funding data/funding.json --cost-bps 13 --output runs/carry-selection.json
+scarlett-research confirm-carry --candles data/futures-5m.json \
+  --funding data/funding.json --selection runs/carry-selection.json \
+  --cost-bps 13 --stress-cost-bps 25 --output runs/carry-confirmation.json
+
+# Use full history only when every asset is an untouched transfer universe
+scarlett-research confirm-carry --candles data/fresh-assets-5m.json \
+  --funding data/fresh-assets-funding.json --selection runs/carry-selection.json \
+  --full-history --output runs/carry-transfer-confirmation.json
 ```
 
 ## Scaling research
@@ -139,6 +151,8 @@ confirmation window or launches a live strategy.
 - `candles-archive` downloads multi-year monthly Binance Spot or USD-M futures archives without an API key
 - `futures-universe` freezes an independent market-cap-ranked crypto universe intersected with the public archive
 - `derivatives-loop` searches causal positioning, funding, and price-regime recipes with an optional multicore Go kernel
+- `carry-loop` searches market-neutral long-low/short-high funding baskets without reading confirmation data
+- `confirm-carry` opens the frozen carry family's final partition once and applies cost stress and Holm correction
 - `backtest-loop` searches bounded indicator rules using next-bar fills and a 60/20/20 walk-forward protocol
 - `catalogue-loop` audits every registered TA function and screens causal outputs without reading confirmation data
 - `select-forward` applies conservative ranking and asset, function, and category caps before paper promotion

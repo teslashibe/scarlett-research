@@ -8,6 +8,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from .backtest import screen_universe, walk_forward
+from .carry import confirm_carry_selection, run_carry_campaign
 from .catalogue import confirm_selection, run_catalogue_campaign
 from .client import ScarlettClient
 from .composites import run_composite_campaign
@@ -226,6 +227,20 @@ def parser() -> argparse.ArgumentParser:
     confirm_derivatives_p.add_argument("--output", type=Path, required=True)
     confirm_derivatives_p.add_argument("--cost-bps", type=float, default=25)
     confirm_derivatives_p.add_argument("--stress-cost-bps", type=float, default=50)
+    carry_p = commands.add_parser("carry-loop")
+    carry_p.add_argument("--candles", type=Path, action="append", required=True)
+    carry_p.add_argument("--funding", type=Path, action="append", required=True)
+    carry_p.add_argument("--output", type=Path, required=True)
+    carry_p.add_argument("--cost-bps", type=float, default=13)
+    carry_p.add_argument("--selection-limit", type=int, default=12)
+    confirm_carry_p = commands.add_parser("confirm-carry")
+    confirm_carry_p.add_argument("--candles", type=Path, action="append", required=True)
+    confirm_carry_p.add_argument("--funding", type=Path, action="append", required=True)
+    confirm_carry_p.add_argument("--selection", type=Path, required=True)
+    confirm_carry_p.add_argument("--output", type=Path, required=True)
+    confirm_carry_p.add_argument("--cost-bps", type=float, default=13)
+    confirm_carry_p.add_argument("--stress-cost-bps", type=float, default=25)
+    confirm_carry_p.add_argument("--full-history", action="store_true")
     return root
 
 
@@ -366,6 +381,39 @@ def main() -> None:
             load(args.candles),
             load(args.metrics),
             load(args.funding) if args.funding else None,
+            load(args.selection),
+            args.cost_bps,
+            args.stress_cost_bps,
+            args.full_history,
+        )
+        write_json(args.output, result)
+        result = {
+            "output": str(args.output),
+            "tested": len(result["results"]),
+            "supported": result["supported"],
+            "conclusion": result["conclusion"],
+        }
+    elif args.command == "carry-loop":
+        result = run_carry_campaign(
+            [load(path) for path in args.candles],
+            [load(path) for path in args.funding],
+            args.cost_bps,
+            args.selection_limit,
+        )
+        write_json(args.output, result)
+        result = {
+            "output": str(args.output),
+            "assets": len(result["assets"]),
+            "events": result["events"],
+            "evaluated": len(result["trials"]),
+            "survivors": result["survivors"],
+            "selected": len(result["selected"]),
+            "confirmationRead": result["protocol"]["confirmationRead"],
+        }
+    elif args.command == "confirm-carry":
+        result = confirm_carry_selection(
+            [load(path) for path in args.candles],
+            [load(path) for path in args.funding],
             load(args.selection),
             args.cost_bps,
             args.stress_cost_bps,
