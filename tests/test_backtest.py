@@ -3,6 +3,7 @@ import datetime as dt
 from scarlett_research.backtest import (
     Rule,
     backtest,
+    freeze_common_rule_selection,
     freeze_universe_selection,
     screen_universe,
     walk_forward,
@@ -82,6 +83,22 @@ def test_freeze_universe_excludes_consumed_assets_and_selects_one_rule_each():
     frozen = freeze_universe_selection(screen, {"USEDUSDT"}, limit=2)
     assert frozen["symbols"] == ["FRESHUSDT"]
     assert frozen["protocol"]["confirmationRead"] is False
+
+
+def test_freeze_common_rule_uses_only_preperiod_eligible_fresh_assets():
+    candidate = {"selectionScore": 1.0}
+    screen = {
+        "ranking": [
+            {"symbol": "USEDUSDT", "candidates": [candidate]},
+            {"symbol": "FRESHUSDT", "candidates": [candidate]},
+        ]
+    }
+    frozen = freeze_common_rule_selection(
+        screen, {"USEDUSDT"}, Rule("sma_cross", 3, 55, 32, "short"), limit=30
+    )
+    assert frozen["symbols"] == ["FRESHUSDT"]
+    assert frozen["rule"]["side"] == "short"
+    assert frozen["protocol"]["inferenceUnit"] == "equal_weight_weekly_portfolio_return"
 
 
 def test_archive_month_rollover():

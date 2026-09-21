@@ -8,7 +8,10 @@ from dataclasses import asdict
 from pathlib import Path
 
 from .backtest import (
+    Rule,
+    confirm_common_rule_selection,
     confirm_universe_selection,
+    freeze_common_rule_selection,
     freeze_universe_selection,
     screen_universe,
     walk_forward,
@@ -167,6 +170,22 @@ def parser() -> argparse.ArgumentParser:
     confirm_screen_p.add_argument("--output", type=Path, required=True)
     confirm_screen_p.add_argument("--cost-bps", type=float, default=13)
     confirm_screen_p.add_argument("--stress-cost-bps", type=float, default=25)
+    common_p = commands.add_parser("freeze-common-rule")
+    common_p.add_argument("--screen", type=Path, required=True)
+    common_p.add_argument("--exclude", type=Path, action="append", default=[])
+    common_p.add_argument("--kind", required=True)
+    common_p.add_argument("--fast", type=int, required=True)
+    common_p.add_argument("--slow", type=int, required=True)
+    common_p.add_argument("--hold", type=int, required=True)
+    common_p.add_argument("--side", choices=("long", "short", "both"), required=True)
+    common_p.add_argument("--limit", type=int, default=30)
+    common_p.add_argument("--output", type=Path, required=True)
+    confirm_common_p = commands.add_parser("confirm-common-rule")
+    confirm_common_p.add_argument("--candles", type=Path, required=True)
+    confirm_common_p.add_argument("--selection", type=Path, required=True)
+    confirm_common_p.add_argument("--output", type=Path, required=True)
+    confirm_common_p.add_argument("--cost-bps", type=float, default=13)
+    confirm_common_p.add_argument("--stress-cost-bps", type=float, default=25)
     catalogue_p = commands.add_parser("catalogue-loop")
     catalogue_p.add_argument("--binary", type=Path, required=True)
     catalogue_p.add_argument("--catalogue", type=Path, required=True)
@@ -386,6 +405,36 @@ def main() -> None:
         result = {
             "output": str(args.output),
             "tested": len(result["results"]),
+            "supported": result["supported"],
+            "conclusion": result["conclusion"],
+        }
+    elif args.command == "freeze-common-rule":
+        excluded = {symbol for path in args.exclude for symbol in load(path).get("symbols", [])}
+        result = freeze_common_rule_selection(
+            load(args.screen),
+            excluded,
+            Rule(args.kind, args.fast, args.slow, args.hold, args.side),
+            args.limit,
+        )
+        write_json(args.output, result)
+        result = {
+            "output": str(args.output),
+            "selectedAssets": result["count"],
+            "excluded": len(excluded),
+            "confirmationRead": result["protocol"]["confirmationRead"],
+        }
+    elif args.command == "confirm-common-rule":
+        result = confirm_common_rule_selection(
+            load(args.candles),
+            load(args.selection),
+            args.cost_bps,
+            args.stress_cost_bps,
+        )
+        write_json(args.output, result)
+        result = {
+            "output": str(args.output),
+            "assets": len(result["symbols"]),
+            "weeks": result["metrics"]["trades"],
             "supported": result["supported"],
             "conclusion": result["conclusion"],
         }

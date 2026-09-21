@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import itertools
 import json
@@ -9,6 +10,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from .catalogue import holm_adjust, sign_flip_p_value
+from .composites import return_metrics
 from .technical_analysis import indicator
 
 
@@ -202,6 +204,99 @@ def confirm_universe_selection(
         },
         "results": results,
         "supported": supported,
+        "conclusion": ("supported_under_test_conditions" if supported else "confirmation_failed"),
+    }
+
+
+def freeze_common_rule_selection(
+    screen: dict[str, Any],
+    excluded: set[str],
+    rule: Rule,
+    limit: int = 30,
+) -> dict[str, Any]:
+    symbols = [
+        row["symbol"]
+        for row in screen["ranking"]
+        if row["symbol"] not in excluded and row["candidates"]
+    ][:limit]
+    return {
+        "protocol": {
+            "family": "common_rule_cross_asset_portfolio",
+            "selectionDataOnly": True,
+            "confirmationRead": False,
+            "assetEligibility": "ranked_preperiod_asset_with_any_stable_candidate",
+            "excludedSymbols": sorted(excluded),
+            "limit": limit,
+            "inferenceUnit": "equal_weight_weekly_portfolio_return",
+        },
+        "count": len(symbols),
+        "symbols": symbols,
+        "rule": asdict(rule),
+    }
+
+
+def _weekly_portfolio_returns(
+    bundle: dict[str, Any], symbols: list[str], rule: Rule, cost_bps: float
+) -> tuple[list[float], dict[str, list[dict[str, Any]]]]:
+    weekly: dict[str, float] = {}
+    outcomes_by_symbol = {}
+    weight = 1 / len(symbols)
+    for symbol in symbols:
+        outcomes = backtest_outcomes(bundle["series"].get(symbol, []), rule, cost_bps)
+        outcomes_by_symbol[symbol] = outcomes
+        for outcome in outcomes:
+            timestamp = dt.datetime.fromisoformat(outcome["exitTime"])
+            year, week, _ = timestamp.isocalendar()
+            key = f"{year:04d}-W{week:02d}"
+            weekly[key] = weekly.get(key, 0.0) + outcome["netReturn"] * weight
+    return [weekly[key] for key in sorted(weekly)], outcomes_by_symbol
+
+
+def confirm_common_rule_selection(
+    bundle: dict[str, Any],
+    selection: dict[str, Any],
+    cost_bps: float = 13,
+    stress_cost_bps: float = 25,
+) -> dict[str, Any]:
+    symbols = selection["symbols"]
+    rule = Rule(**selection["rule"])
+    returns, outcomes = _weekly_portfolio_returns(bundle, symbols, rule, cost_bps)
+    stress_returns, _ = _weekly_portfolio_returns(bundle, symbols, rule, stress_cost_bps)
+    metrics = return_metrics(returns)
+    stress_metrics = return_metrics(stress_returns)
+    recipe_id = hashlib.sha256(
+        json.dumps({"symbols": symbols, "rule": selection["rule"]}, sort_keys=True).encode()
+    ).hexdigest()
+    raw_p = sign_flip_p_value(returns, int(recipe_id[:16], 16), samples=100_000)
+    supported = bool(
+        len(symbols) >= 12
+        and metrics["trades"] >= 30
+        and (metrics["meanReturn"] or 0) > 0
+        and (stress_metrics["meanReturn"] or 0) > 0
+        and raw_p <= 0.05
+    )
+    return {
+        "protocol": {
+            "family": selection["protocol"]["family"],
+            "partition": "full_later_period_independent_asset_transfer",
+            "opened": True,
+            "familySize": 1,
+            "inferenceUnit": "equal_weight_weekly_portfolio_return",
+            "minimumAssets": 12,
+            "minimumWeeks": 30,
+            "costBps": cost_bps,
+            "stressCostBps": stress_cost_bps,
+            "test": "one_sided_weekly_sign_flip",
+        },
+        "recipeId": recipe_id,
+        "symbols": symbols,
+        "rule": selection["rule"],
+        "metrics": metrics,
+        "stressMetrics": stress_metrics,
+        "rawPValue": raw_p,
+        "supportedUnderTestConditions": supported,
+        "outcomesBySymbol": outcomes,
+        "supported": int(supported),
         "conclusion": ("supported_under_test_conditions" if supported else "confirmation_failed"),
     }
 
