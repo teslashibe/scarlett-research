@@ -258,7 +258,11 @@ def confirm_common_rule_selection(
     cost_bps: float = 13,
     stress_cost_bps: float = 25,
 ) -> dict[str, Any]:
-    symbols = selection["symbols"]
+    requested_symbols = selection["symbols"]
+    symbols = [
+        symbol for symbol in requested_symbols if len(bundle["series"].get(symbol, [])) >= 300
+    ]
+    excluded_insufficient_history = sorted(set(requested_symbols) - set(symbols))
     rule = Rule(**selection["rule"])
     returns, outcomes = _weekly_portfolio_returns(bundle, symbols, rule, cost_bps)
     stress_returns, _ = _weekly_portfolio_returns(bundle, symbols, rule, stress_cost_bps)
@@ -284,6 +288,9 @@ def confirm_common_rule_selection(
             "inferenceUnit": "equal_weight_weekly_portfolio_return",
             "minimumAssets": 12,
             "minimumWeeks": 30,
+            "requestedAssets": len(requested_symbols),
+            "testedAssets": len(symbols),
+            "excludedInsufficientHistory": excluded_insufficient_history,
             "costBps": cost_bps,
             "stressCostBps": stress_cost_bps,
             "test": "one_sided_weekly_sign_flip",
@@ -295,6 +302,17 @@ def confirm_common_rule_selection(
         "stressMetrics": stress_metrics,
         "rawPValue": raw_p,
         "supportedUnderTestConditions": supported,
+        "results": [
+            {
+                "recipeId": recipe_id,
+                "symbol": f"PORTFOLIO_{len(symbols)}_ASSETS",
+                "family": selection["protocol"]["family"],
+                "rule": selection["rule"],
+                "outcomes": [
+                    {"weekIndex": index, "return": value} for index, value in enumerate(returns)
+                ],
+            }
+        ],
         "outcomesBySymbol": outcomes,
         "supported": int(supported),
         "conclusion": ("supported_under_test_conditions" if supported else "confirmation_failed"),
