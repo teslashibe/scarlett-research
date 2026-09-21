@@ -148,6 +148,10 @@ def parser() -> argparse.ArgumentParser:
     universe_p.add_argument("--limit", type=int, default=200)
     universe_p.add_argument("--ranking-pages", type=int, default=2)
     universe_p.add_argument("--output", type=Path, required=True)
+    difference_p = commands.add_parser("universe-difference")
+    difference_p.add_argument("--universe", type=Path, required=True)
+    difference_p.add_argument("--exclude", type=Path, action="append", required=True)
+    difference_p.add_argument("--output", type=Path, required=True)
     backtest_p = commands.add_parser("backtest-loop")
     backtest_p.add_argument("--candles", type=Path, required=True)
     backtest_p.add_argument("--output", type=Path, required=True)
@@ -340,6 +344,19 @@ def main() -> None:
             "archiveSymbolCount": result["archiveSymbolCount"],
             "count": result["count"],
         }
+    elif args.command == "universe-difference":
+        universe = load(args.universe)
+        excluded = {symbol for path in args.exclude for symbol in load(path).get("symbols", [])}
+        symbols = [symbol for symbol in universe.get("symbols", []) if symbol not in excluded]
+        full_result = {
+            "source": str(args.universe),
+            "excludedSources": [str(path) for path in args.exclude],
+            "count": len(symbols),
+            "symbols": symbols,
+        }
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(full_result, indent=2) + "\n")
+        result = {"output": str(args.output), "count": len(symbols)}
     elif args.command == "futures-metrics-archive":
         start = dt.datetime.fromisoformat(args.start).replace(tzinfo=dt.UTC)
         end = (
